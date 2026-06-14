@@ -51,7 +51,7 @@ cd <仓库路径>/android10
 
 ### 快速 debug：只更新六件套并重启服务（无需重编整镜像）
 
-`arm96` 内部各组件相互 md5/hash 校验，**六件套必须同批构建、整套替换，不能只换其中一个**。
+`arm96` 内部各组件相互 md5/hash 校验，**六件套必须同批构建、整套替换，不能只换其中一个**。具体哪几件是密钥融合硬耦合（arm96/arm96server/arm96d/libarm96）、哪几件是松耦合（arm96_sidecar_gen/arm96j.jar），见 `android10/vendor/hello/arm96/CLAUDE.md` 的"密钥派生链 / 六件套哈希耦合关系"小节。
 
 ```bash
 cd <仓库路径>/android10/vendor/hello/arm96
