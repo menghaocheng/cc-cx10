@@ -2,3 +2,5 @@
 /commit.log
 /.git-worktrees/
 /.vscode/
+/tmp/
+/vmp/
