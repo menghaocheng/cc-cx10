@@ -1,0 +1,13 @@
+
+继续上次课题：先读 .claude/README.md、.claude/instructions/project_entry.md，然后
+很客观评价一下当前arm96基于二进制二次加固方案的安全性
+
+
+.claude/chats/Adversarial_analysis/arm96-analysis-round1-V0.44.0.md是另一个AI针对 V0.44.0的VC定制进制逆向的一些分析记录
+它并不知道当前工作区间的任何文档或源码，仅仅是分析发布包/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/release/arm96-V0.44.0-vc-release.tgz
+
+我策划了一专红蓝对抗，你是防守方，它是攻击方，这是第一轮。它的攻击方法会同步给你，就如以上的文档一样。这场对抗的最终目的是把arm96项目优化到一个比较安全的水平。
+
+现在请根据你刚刚对当前方案的评价分析，并结合红方的攻击分析，做以下事情：
+1.结合实现的保护细节，从原理上判断红方的攻击是否成立
+2.列出哪些是当前比较需要紧急加强的

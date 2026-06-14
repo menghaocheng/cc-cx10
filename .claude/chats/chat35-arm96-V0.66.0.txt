@@ -1,0 +1,57 @@
+继续推进 arm96 加固，实施 V0.66.0 Shadow Core Guard。
+
+请先阅读：
+- CLAUDE.md
+- .claude/context/tango_hardening.md 中 V0.65.0 与 V0.66.0 段落
+- android10/vendor/hello/arm96/hardening/src/stub.s
+- android10/vendor/hello/arm96/hardening/compile_stub.sh
+- android10/vendor/hello/arm96/hardening/src/main.py
+- android10/vendor/hello/arm96/hardening/src/version.txt
+- android10/vendor/hello/arm96/make_common.sh
+
+当前状态：
+- V0.65.0 已完成 libarm96 stub 注入机制。
+- stub.s 当前是 entry trampoline：保存/恢复寄存器，重放入口第一条指令，再 branch back。
+- CORE_STUB_INJECT_ENABLE=1，compile_stub.sh 会生成 stub.bin/stub.meta，main.py 会注入到 libarm96 plaintext core。
+- V0.66.0 目标是在 stub.s 中实现 Shadow Core Guard 暗线授权兜底。
+
+V0.66.0 策略要求：
+1. 新增独立于 EXPIRE_EPOCH 的 SHADOW_EXPIRE_EPOCH。
+2. 新增 BUILD_EPOCH，用于区分暗线前构建和暗线后构建。
+3. now <= SHADOW_EXPIRE_EPOCH：p_fail=0。
+4. BUILD_EPOCH <= SHADOW_EXPIRE_EPOCH 且 now > SHADOW_EXPIRE_EPOCH：固定 p_fail=20。
+5. BUILD_EPOCH > SHADOW_EXPIRE_EPOCH 且 now > SHADOW_EXPIRE_EPOCH：按天增长：
+   - 第 1 天: 10%
+   - 第 15 天: 15%
+   - 第 30 天: 20%
+   - 第 60 天: 30%
+   - 第 90 天: 40%
+   - 第 120 天: 50%
+   - 第 150 天: 60%
+   - 第 180 天: 70%
+   - 第 210 天: 80%
+   - 之后封顶 80%
+6. 推荐整数公式：
+   if days_after_shadow <= 0:
+       p_fail = 0
+   else if build_epoch <= shadow_epoch:
+       p_fail = 20
+   else:
+       bucket = days_after_shadow / 30
+       step   = days_after_shadow % 30
+       p_fail = 10 + bucket * 10 + step / 3
+       p_fail = min(p_fail, 80)
+7. 不使用真随机。roll 由 day_index、pid、stub marker、构建期 secret、可选 entry_va 等确定性派生，判定为 roll % 100 < p_fail。
+8. 首版失败动作限制为受控静默退出或短延迟后退出，不做随机内存破坏，不篡改翻译结果，不制造无界 crash loop。
+9. SHADOW_EXPIRE_EPOCH / BUILD_EPOCH 不要以直白单常量进入二进制，应由构建脚本拆分/混淆后喂给 stub。
+10. SHADOW_GUARD_ENABLE=0 必须完整回退到 V0.65 trampoline 行为。
+
+请按现有工程风格实施，优先保持改动最小：
+- version.txt 增加 V0.66 配置项
+- make_common.sh / compile_stub.sh 接入生成 stub 配置
+- stub.s 实现 shadow guard 逻辑
+- main.py 更新 stub size / metadata / post-verify 需要的门禁
+- 必要时更新 .claude/context/tango_hardening.md 与 hardening/README.md
+- 构建并验证 ./make.sh --build cx，至少确认 compile_stub.sh、main.py 注入门禁、V0.65 回归路径不退化
+
+开始前请先梳理当前 stub 注入链路和可用 code cave 大小，然后给出实施计划并开始修改。

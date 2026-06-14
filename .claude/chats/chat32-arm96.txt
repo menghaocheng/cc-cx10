@@ -1,0 +1,28 @@
+继续推进 arm96 加固，本次会话目标是实现 V0.64.0。
+
+背景
+当前线上版本：V0.63.0，外部对抗 AI 在其上做了 1 小时定向攻击 + 14 个变体，最佳结果 162s / 180s 未达标。
+V0.64.0 的规划已写入 tango_hardening.md 中 V0.62.0 小节之后，请先完整读取该小节理解设计边界、实施项、验收判据与"本版本不做"清单。
+评估依据：analysis-arm96-V0.63.0.md §6 实战部分。其中 vpkj.jar 与 shmkd 已确认与本项目无关（外部插件 + 假相关），不纳入实施范围。
+约束（重要）
+代码改动范围优先限定 arm96 下；frameworks/base 仅在 P0-2 action token 协议升级确实必须时才动，且改动前先列影响清单征求确认。
+不修改预编译 libarm96。
+不引入新的常驻线程，新增检测全部挂到 arm96d / arm96server 现有主循环。
+不动 V0.62 已稳定的 Frida 端口探测 / RWX 扫描 / prologue 巡检主体逻辑。
+不实现 V0.50 周期 challenge-response（排到 V0.65），但 P0-1 互检通道、P0-3 .text witness 要为 V0.65 预留 nonce 字段。
+不引入 ftrace / 内核观测对抗——明确划在本项目防御面之外。
+实施顺序
+先 Preflight：按 V0.64.0 小节的"实施前检查清单"逐项确认（arm96d ↔ arm96server PID 交换现状、arm96d 构建是否接 OLLVM、State: 抖动采样、FW 授权决策、release flag 强制断言），结论写到 session memory。
+P0-1：arm96d ↔ arm96server SIGSTOP 互检（关闭 v5 攻击路径，收益最高、改动最小）。
+P0-3：arm96d 静态加固跟齐 V0.40（OLLVM + 字符串加密 + .text 自校验 + .text SHA-256 并入第 8 层密钥融合）。
+P0-2 / P0-2'：6 个 action token 去常量化。FW 是否能动决定走 P0-2（HMAC + nonce 三元组）还是 P0-2'（保留 plaintext + UID 门禁 + 频次校验 + 字符串加密）。
+P1-1：残留 IOC 字符串加密（TracerPid / /proc/self/status / TGENC022 magic / verify_signature）。
+P1-2：fault stamp 触发面扩充。
+验收：按 V0.64.0 验收判据逐条跑（verify_mustpass.sh 12/12 + SIGSTOP 互检设备验证 + release artifact strings IOC 扫描 + token 回放拒绝 + arm96d .text patch 后 libarm96 解密失败）。
+开工前请先做
+完整读取 tango_hardening.md 的 V0.62.0、V0.64.0 两节，以及 V0.40 / V0.51 / V0.53 / V0.62 相关历史以理解既有机制复用点。
+列出 P0-1 的具体改动清单（文件 + 函数 + 大致行号 + 差异预览），先给我确认再写代码。
+对 P0-2，先告诉我 FW 那段 Arm96j.jar / Arm96Service / AIDL 当前是怎么把 action 传给 arm96d 的（看 Arm96dService.cpp 的接收侧 + framework patch 的发送侧），再让我决定走 P0-2 还是 P0-2'。
+构建与设备验证命令、SER_A / SER_B 自动选段、verify_mustpass.sh 入口、binfmt flags 必须 POC 等约定见 CLAUDE.md，不再赘述。
+
+按上述节奏推进，每完成一个 P 项立刻跑 mustpass 主链验证不退化，再进下一项。

@@ -1,0 +1,70 @@
+请深入理解arm96的工作原理框架和实现细节，
+
+确认一下.claude/context/tango_hardening.md的版本规划、实际状态相关描述中是否包含了这些修改点
+d7df43a (HEAD -> main/1.0) V0.58.0
+0257fad arm96d：接管 binfmt 注册
+0aa454e shell/debug_pretranslate_apk.sh
+dd83ef2 arm96_sidecar_gen加固
+f402108 更新方案基本patch
+b69d42b 调整安装预翻译开关persist.sys.ap3219402ff1的默认值为0
+9f8f797 更新安装预编译开关:persist.sys.ap3219402ff1，取舍{0,1}，缺省:1
+4cbcb62 重新构建patch
+83bfffa (origin/main/1.0, backup/main_1.0-before-pt-default-amend-20260517220034, backup/main_1.0-before-arm96-squash-20260515123021) package: include complete arm96 artifact set
+824839d refactor arm96 build artifact flow
+0d06fcd arm96: add install-time pretranslation flow and sidecar rename
+320b1b4 更新 arm96j arm96d 实现状态文档
+aa3a021 添加arm96j arm96d
+
+
+看一下persist.vendor.p3a9c7d1e是干啥的
+
+以下是另2个AI对当前arm96方案的简要评价:
+
+AI1:
+从当前静态线索看，它的抗逆向强度只能算中低到中等，原因是：
+
+1.arm96、arm96server 是未 strip 的 AArch64 静态 ELF，逆向成本比 stripped/混淆/符号清理后的版本低。
+2.arm96j.jar 有清晰类名和 debug 编译元数据，Java bridge 暴露了 arm96d、registerPlugin、forwardToArm96d 等结构。
+3.arm96d 里能看到 elapsedRealtime、GetBoolProperty、SystemProperties 相关线索，说明它可能依赖 Android 属性或本地时间/运行时间。
+4.0002-arm96-add-base-image-integration--part1.patch:327-330 暴露了 persist.vendor.p3a9c7d1e 这个可疑持久属性。如果授权状态、到期时间或启用位存在本地属性里，抗篡改性会比较弱。
+5.arm96_sidecar_gen 有 verify_signature、check-signature、Signature matches. Source is unchanged. Will not re-translate. 等字符串，但这更像 pretranslation/cache 完整性签名，不一定是授权许可签名。
+6.没看到 arm96d 动态链接 libcrypto、libssl、BoringSSL 之类库。可能是静态/自研加密，也可能授权机制没有强密码学支撑。后者风险很高。
+
+
+AI2:
+安全性评估（含授权机制可不可破）
+2.1 整体设计上的若干硬伤（与许可证无关，但影响整体可信度）
+arm96server 跑在 u:r:su:s0。su 是 userdebug 下给 adb root 用的"无策略"域，把它放到 production user 镜像里运行一个常驻 critical 服务，相当于主动留了一个 root + SELinux 全绕过的常驻进程。一旦此进程被攻陷（或本身被滥用），等于内核之上无任何 MAC 防线。
+Arm96BinderService.registerPlugin() 注释里就写着 // TODO: Add permission check for who can register plugins，目前任何能 find 到 arm96j service 的进程都能注册 plugin，进而以 oneway 方式接收所有进程 fork/exit、所有 APK 安装的 packageName/UID/PID/codePath。SELinux 上只 allow zygote arm96j_service:service_manager find，但凡哪天追加 find 给 appdomain（很容易在后续 patch 里被一行加上），就成了系统级监控信道。
+Arm96j.onAction(...) 调用是 non-oneway（代码里 oneway 参数被忽略，两个分支都走同一个 dispatchEvent），跑在 PMS / AMS 主路径上，plugin 慢一秒，全机进程启动慢一秒；plugin 死锁可拖垮 system_server。
+arm96_sidecar_gen 拥有 apk_data_file:file create_file_perms（写入应用私有目录的翻译缓存），这是经典的 confused deputy 面：缓存路径 / 内容若可被诱导，会写穿其它应用沙箱。
+整套 binfmt_misc + 自研 DBT 本身就是一个巨大的攻击面（Houdini / QEMU-user / ExaGear 历年都有逃逸 CVE）。32 位代码翻成 64 位后沿用调用方的 UID / SELinux domain —— 翻译器一个 bug 就等于该 domain 内的任意代码执行。
+2.2 关于授权（时间炸弹）机制能否被攻破——逆向角度
+二进制里没有任何明文 license / expire / valid until / 2026/2027-类字串（已对全部五个 ELF 做过 ASCII string + UTF-8 关键词扫描）。这说明检查要么藏在 arm96 / arm96server 这两个被精简过 strings 的可执行里，要么以加密 / 偏移常量形式存在于 libarm96 的数据段。即使如此，从逆向工程师视角，这套机制基本不可能挡住一个中等水平的对手，理由如下：
+
+官方 Android.bp 明确写了 strip: { none: true } —— 五个 ELF 全部保留完整符号表。这意味着无需任何符号恢复就能在 IDA / Ghidra 里几分钟内定位 check_* / verify_* / time 周边的逻辑。这是逆向友好度近乎"调试版"的水平。
+检查必然依赖以下三种之一，三种都已知如何打：
+系统时钟 (time / clock_gettime) ＋ 内嵌截止时间常量：把系统日期回退 / LD_PRELOAD 一个 faketime / 直接 patch 那个 cmp/b 分支即可。
+系统属性（注意 property_contexts 已经为 persist.vendor.p3a9c7d1e 单独建了 arm96_prop 类型，这极可能就是授权令牌/期限的持久化位置）：在 arm96_prop 域内的进程可写它，root 可写它，攻击者拿到 user 镜像后随便写。
+远端校验：当前补丁里没有任何网络相关 sepolicy（arm96d / arm96server 都没有 net_domain()），所以这套机制不会联网，全部是本地判定 —— 本地判定本质上就是一次单字节 b.ne → b.al patch 的事情。
+唯一像样的硬化点是 arm96server（PID-tracking anti-debug），但它是用户态进程：
+攻击者在自己设备上是 root（这套机制保护的就是被分发到第三方手里之后的镜像），可以直接 init.svc.arm96server=stopped、把 arm96.rc 里 critical 删掉、或者把 /system/bin/arm96server 换成 /bin/true。
+静态分析 / 离线 patch 根本不需要 ptrace，反调试对 IDA / Ghidra / Binary Ninja 无效。
+在 qemu-system-aarch64 等模拟器里跑，ptrace 探测形同虚设。
+binfmt_misc 入口是可替换的：patch 0001 自己刚刚演示了把整套 tango 删掉再换成 arm96。第三方完全可以反向操作：把 /proc/sys/fs/binfmt_misc/arm96 写 -1 注销，再注册自己的 handler（包括接回开源 tango / box64 / FEX-emu），整个授权链直接绕过。
+翻译缓存文件名格式 %s/%lx_%x_%x_%lu_%lx_%lx.arm96 没有签名校验，只是 hash + size + mtime（Signature matches. Source is unchanged. Will not re-translate. 这条 string 是缓存复用判定，不是授权签名），不构成防护。
+事件 token 用 461272e9 这种伪随机十六进制 —— 纯粹"以混淆代替安全"，对照 ProcessList.java / PackageManagerService.java 三个调用点和 Arm96j.java 中的常量表，每个 token 对应哪种事件几行代码就能对回去。
+2.3 结论
+整体是否"已经足够安全"：否。arm96server 长驻 su 域 + plugin 注册无鉴权 + 跨进程明文事件广播 三项任一都不应进入 user build；翻译器自身也是大块未审计的攻击面。建议至少：把 arm96server 拉出 su 域改用最小化自定义 te；补 registerPlugin 的 UID / 签名鉴权（限定 system_server 或固定 platform-signed APK）；把 dispatchEvent 改成真正 oneway 并去掉对 PMS/AMS 主路径的同步阻塞；为 plugin 列表做白名单。
+授权日期机制是否会被第三方攻破：几乎必然会。在二进制未 strip、纯本地判定、anti-debug 仅靠一个可被 root 杀掉/替换的用户态守护、binfmt_misc handler 可被注销重注册这四个条件同时成立的前提下，时间锁的有效保护强度大致等价于"对没有 root 的普通用户保持几天到几周"，对一个会用 IDA + 会改 init.rc 的对手而言，从拿到镜像到完整去锁通常是小时级的工作量。如果非要把"过期禁用"作为商业控制手段，至少需要：
+把 arm96 / libarm96 / arm96server 全部 strip 并加壳/控制流混淆；
+用 AVB 链 + dm-verity 把这三个文件做强校验，让 /system/bin/arm96server 不能被替换；
+时间源不要信本地 CLOCK_REALTIME，至少混合 CLOCK_BOOTTIME 单调累积 + 持久化 monotonic anchor；
+给授权 token 加非对称签名（设备绑定 + 时间窗），由 TEE 里的小程序判定，而不是任何 Linux 用户态进程；
+关键检查应内联到翻译热路径里多点冗余、并以无字面常量的方式比较（mask + xor 形式），让单点 patch 失效。
+即便做完上述 5 条，对国家级 / 商业逆向团队也只是"提高成本到周级"。任何完全跑在 normal-world 用户态的时间炸弹，从原理上都不可能阻挡有 root 的目标设备持有者——这一点必须在产品决策层面接受。
+
+
+它们的评估不一定对，可能有些它认为可轻易攻破的点，其实已经有深层次的保护
+
+看下有没有比较明显可以优化的点

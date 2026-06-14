@@ -1,0 +1,20 @@
+
+准备继续在arm96上工作了，请深入理解arm96d的工作原理，
+深入理解arm96_sidecar_gen的由来
+
+我想把android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/init/arm96.rc中的
+
+on property:tango.enabled=1
+    write /proc/sys/fs/binfmt_misc/arm96 1
+
+on property:tango.enabled=0
+    write /proc/sys/fs/binfmt_misc/arm96 0
+
+去掉，并把
+on late-fs
+    mount binfmt_misc none /proc/sys/fs/binfmt_misc
+    write /proc/sys/fs/binfmt_misc/arm96 -1
+    write /proc/sys/fs/binfmt_misc/register ":arm96:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\xfe\xff\xff\xff:/system/bin/arm96:POC"
+
+由进arm96d里面，避免暴露细节。
+请评估一下

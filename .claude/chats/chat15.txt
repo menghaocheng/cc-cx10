@@ -1,0 +1,68 @@
+准备继续在arm96上工作了，开始前请先
+1.请深入理解这两个提交：
+af6451edd77 add arm96 integration
+1178a794b99 remove legacy tango integration
+2.阅读.claude/context/arm96_pretranslator_migration_handoff.md
+
+然后继续探讨
+
+
+请继续 arm96 优化讨论。先阅读 `.claude/context/arm96_pretranslator_migration_handoff.md`，重点围绕 `1178a794b99 remove legacy tango integration` 中移除的 legacy Tango pretranslation 链路，判断 `tango_pretranslate`、设备端 `tango_pretranslator.arm64`、host 端 `tango_pretranslator.x86_64` 是否需要迁移到 arm96。请结合当前 `af6451edd77 add arm96 integration` 的 JIT-only 口径、`tango_reimpl` 中仍保留的 `src/tango_pretranslator_reimpl`、以及当前 hardening/验收链，优先给出低风险分阶段迁移方案和验证计划。
+
+
+libarm96确实有尝试打开.arm96的逻辑（原始二进制是尝试打开.tango）—— 你可以再次确认
+这可能是要配合tango_pretranslator.arm64或tango_pretranslator.x86_64来工作的。arm96.mk中的这两行说明：
+# pretranslator and tangolic removed: license + integrity are embedded in loader (V0.32+)
+# JIT-only mode: no static pre-translation, no separate license service
+是在tango => arm96迁移早期，为了简单起见，避免同时迁移多个二进制时可能引入复杂的依赖而简化的策略。
+当前阶段tango => arm96的主体迁移已经完成（支线任务），这个前期的策略需要重新审视
+直观的判断是：原始这个pretranslator机制应该是为性能打造的。
+
+请：
+1.评估一下这个pretranslator机制对性能的提升的适用范围和提升幅度
+2.评估一下迁移价值、工作量和主要风险
+
+
+192.168.11.22:5004是一个集成了tango方案的实例（其中tango_translator不是tango_translator.cheersu，而是另外一个评估版本，但对当前讨论的问题没影响)
+我在系统中发现了一些.tango文件：
+sky1_evb:/system # find ./ -name *.tango
+./lib/libgiftranscode.so.tango
+./lib/libssh.so.tango
+./lib/librs_jni.so.tango
+./priv-app/Shell/Shell.apk.tango
+./priv-app/ManagedProvisioning/ManagedProvisioning.apk.tango
+./priv-app/InputDevices/InputDevices.apk.tango
+./priv-app/TeleService/TeleService.apk.tango
+./priv-app/MtpDocumentsProvider/MtpDocumentsProvider.apk.tango
+./priv-app/DynamicSystemInstallationService/DynamicSystemInstallationService.apk.tango
+./app/ExtShared/ExtShared.apk.tango
+./app/messaging/messaging.apk.tango
+./app/SimAppDialog/SimAppDialog.apk.tango
+./app/PrintRecommendationService/PrintRecommendationService.apk.tango
+./bin/app_process32.tango
+sky1_evb:/system # ^C
+130|sky1_evb:/system # cd /vendor/
+sky1_evb:/vendor # find ./ -name *.tango
+./lib/soundfx/libvisualizer.so.tango
+./lib/libril.so.tango
+./lib/libreference-ril.so.tango
+./lib/mediacas/libclearkeycasplugin.so.tango
+./lib/hw/bootctrl.cix.so.tango
+./lib/hw/android.hardware.graphics.mapper@3.0-impl-arm.so.tango
+./lib/hw/gralloc.default.so.tango
+./lib/hw/gatekeeper.cix.so.tango
+./lib/hw/android.hardware.graphics.allocator@3.0-impl-arm.so.tango
+./lib/libwpa_client.so.tango
+./bin/hw/android.hardware.media.omx@1.0-service.tango
+sky1_evb:/vendor #
+
+你可以连到设备上获取更多的信息再做进一步的评估
+
+
+tango_pretranslator.arm64 是设备端预翻译工具，legacy 中在安装 app、dexopt 或手动触发时，为 ARM32 .so/APK/OAT 等生成 .tango 侧车缓存。
+tango_pretranslator.x86_64 是 host 构建期预翻译工具，为系统镜像内置的 ARM32 executable/shared library/APK 提前生成 .tango 侧车缓存。
+tango_translator 执行 ARM32 程序时，会尝试查找原始文件旁边的 .tango 缓存；如果存在且可用，就加载其中的预翻译 AArch64 代码片段，否则走实时 JIT 翻译。
+在当前 arm96 中，legacy .tango 后缀已经被 hardening/remap 成 .arm96。
+
+
+构建期预翻译工具和安装时预翻译，迁移哪一个的收益更大？

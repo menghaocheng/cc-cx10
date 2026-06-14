@@ -1,0 +1,35 @@
+请深入理解arm96的工作原理框架和实现细节,只看基于二进制二次加固
+
+以下是别的AI对当前arm96方案的简要评价:
+
+android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/tmp/arm96_analysis_report_01.md
+
+它说的不一定对，可能有些它认为不安全的点其实已经有暗中深层次的保护，如延迟下毒策略，但这些点需要你帮确认它到底说的攻击点是否成立
+然后看下有哪些是比较明显需要加强的
+
+有AI发现了以下信息，请确认一下编译源码相关信息有没有去掉
+
+在 arm96d 内部，存在以下明确记录了项目源码树路径与系统注册路径的文本特征：
+
+编译源码树路径（包含 tango_reimpl）：
+
+vendor/vclusters/opensource/thirdpart/tango_reimpl/src/arm96d/main_arm96d.cpp
+vendor/vclusters/opensource/thirdpart/tango_reimpl/src/arm96d/service/Arm96dService.cpp
+这里的 tango_reimpl 代表 Tango Reimplementation (Tango 重新实现)。Tango 是华为为其仅支持 64 位的芯片平台（如部分麒麟/盘古处理器）自主研发的 32 位到 64 位动态二进制翻译（DBT）兼容框架。
+内核级 binfmt_misc 翻译器配置路径：
+
+在 arm96d 对 Linux binfmt_misc 的注册参数中，除了配置 /proc/sys/fs/binfmt_misc/arm96 之外，还保留了对旧版译码器注册路径的向下兼容支持：
+/proc/sys/fs/binfmt_misc/tango_translator
+项目定制组织 (VClusters)：
+
+源码路径中的 vclusters（星河虚拟化或虚拟群集群项目）表明，目前工作区中呈现的 arm96 解决方案，是第三方或合作伙伴基于华为 Tango 开源/重构版本进行本地化适配与二次定制的产物。
+
+
+
+以下是别的AI对当前arm96方案的简要评价:
+android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/tmp/ARM96_Security_Analysis_Report.md
+
+它说的不一定对，可能有些它认为不安全的点其实已经有暗中深层次的保护，如延迟下毒策略，但这些点需要你帮确认它到底说的攻击点是否成立
+然后看下有哪些是比较明显需要加强的
+
+

@@ -1,0 +1,261 @@
+我们现在切回开发基线分支 debug/20260506_arm96_new_dbg，开始讨论“安装时预翻译”方案。
+
+背景：
+- V0.57 构建期预翻译实验已暂停，冻结点是 debug/20260509_arm96_new_dbg_v0.57 @ 181a0cbb76007240ae25ab3764f0a5564e325593。
+- 当前继续开发基线是 debug/20260506_arm96_new_dbg @ eec20882d53。
+- 已验证 build-time .arm96 sidecar 生成与运行链路可用，但 com.dragon.read 体感无明显优化，因此不继续沿 build-time 方向扩面。
+
+这次新会话的目标：
+1. 先只做“安装时预翻译”的方案设计，不急着写代码。
+2. 明确安装触发点应该放在 PMS、installd、还是独立 helper。
+3. 明确失败回退策略：预翻译失败时不能影响安装成功，最多回退 JIT。
+4. 明确产物位置、签名/版本校验、stale cache 处理、权限模型和性能观测方案。
+5. 最后给出最小可实施方案和分阶段开发计划。
+
+约束：
+- 当前仍在 AOSP 验证阶段，不讨论 release 收口。
+- 默认最小侵入，不优先走大范围 framework 改造。
+- 中文沟通。
+
+
+====================
+本次会话总结（2026-05-10）
+====================
+
+一、会话背景
+
+1. 当前讨论对象已从 build-time 预翻译切换为 install-time 预翻译。
+2. build-time `.arm96` sidecar 生成与运行链路已验证可用，但对 `com.dragon.read` 的主观体感无明显优化，因此不继续沿 build-time 方向扩面。
+3. 当前工作基线为 `debug/20260506_arm96_new_dbg @ eec20882d53`。
+4. 历史上 legacy Tango 曾实现过 `PMS -> Installer -> IInstalld -> installd -> tango_pretranslator` 的安装时/运行时预翻译链路，但该链路已在 2026-05-07 被有意识删除，当前基线明确回到 JIT-only。
+
+二、本次会话目标
+
+1. 不写代码，先完成 install-time 预翻译方案设计。
+2. 明确安装触发点应该落在 PMS、installd 还是独立 helper。
+3. 明确失败回退策略，保证预翻译失败不影响安装成功，最多回退 JIT。
+4. 明确产物位置、命名、校验、stale cache、权限模型和性能观测方案。
+5. 给出最小可实施方案、分阶段开发计划，以及进入编码前需要冻结的接口契约。
+
+三、核心结论
+
+1. 触发点建议放在 PMS。
+2. 执行体建议使用独立 helper，而不是直接恢复 installd 旧链路。
+3. 一期不恢复 `Installer.java`、`IInstalld.aidl`、`InstalldNativeService.cpp`、`dexopt.cpp` 等 legacy 高侵入改动面。
+4. install-time 预翻译必须是异步 best-effort，不进入安装成功判定路径。
+5. sidecar 主扩展名建议统一为 `.arm96`。
+6. runtime 查找顺序建议为 `.arm96 -> .tango -> JIT`，其中 `.tango` 仅作为过渡兼容。
+7. 一期产物建议采用 sibling sidecar，即 `base.apk.arm96`，先只覆盖 `/data/app/.../base.apk`。
+8. stale cache 判定以输入文件 hash、输入大小、format version、pretranslator build hash、runtime compatibility version 为准。
+9. sidecar 无效、损坏、缺失、helper 失败、超时、权限不足、磁盘不足等场景，统一回退 JIT，不能影响安装成功。
+10. 当前阶段的成功标准不是“主观明显提速”，而是“安装不回归、sidecar 命中链路稳定、可量化观测、mustpass 全绿”。
+
+四、设计取舍
+
+1. PMS:
+	- 优点是知道安装成功时机，天然能拿到 `baseCodePath`、包名、uid、ABI 信息。
+	- 可在 post-install 成功分支异步投递任务，不阻塞安装主路径。
+	- 是当前最小侵入方案。
+
+2. installd:
+	- 虽然更靠近文件落盘点，但要恢复 Java/aidl/native/sepolicy 旧接口，侵入面过大。
+	- 不适合作为一期方案。
+
+3. 独立 helper:
+	- 适合作为执行者，不适合作为触发源。
+	- 若让 helper 自己监听安装，会引入时序与语义竞态。
+
+五、推荐实施顺序
+
+Phase 0：契约冻结
+- 冻结 sidecar 扩展名、helper CLI、runtime 查找顺序、校验字段、日志 tag、退出码语义。
+
+Phase 1：MVP
+- PMS 安装成功后异步投递任务。
+- helper 仅处理 `/data/app/.../base.apk`。
+- 输出 sibling sidecar。
+- 命中 existing-valid 时 skip。
+- 任意失败只记录，不影响安装成功。
+
+Phase 2：稳态补强
+- split APK、任务去重、更新安装 stale 重建、临时文件清扫、metrics 汇总。
+
+Phase 3：是否扩面
+- 仅在数据证明有收益后，再评估 extracted `.so`、集中 cache 目录等更大改动。
+
+六、已完成的设计资产
+
+本次会话已产出以下文档：
+
+1. 总设计：
+	- `.claude/context/arm96_install_time_pretranslation_design.md`
+
+2. Phase 0 契约：
+	- `.claude/context/arm96_install_time_pretranslation_contract.md`
+
+3. 代码落点清单：
+	- `.claude/context/arm96_install_time_pretranslation_landing_plan.md`
+
+4. PMS 方法级伪代码：
+	- `.claude/context/arm96_install_time_pretranslation_pms_pseudocode.md`
+
+5. helper 框架草图：
+	- `.claude/context/arm96_install_time_pretranslation_helper_framework.md`
+
+6. 验证与观测计划：
+	- `.claude/context/arm96_install_time_pretranslation_validation_plan.md`
+
+七、已冻结的关键接口口径
+
+1. sidecar 主扩展名：`.arm96`
+2. runtime 查找顺序：`.arm96 -> .tango -> JIT`
+3. PMS 新任务消息号建议：`ARM96_PRETRANSLATE_INSTALL = 26`
+4. helper 建议模块名：`arm96_pretranslate_helper`
+5. helper 默认输出：`<input>.arm96`
+6. helper 退出码分层：
+	- `0` 成功生成
+	- `10` existing-valid skip
+	- `20` policy skip
+	- `30+` 失败类
+7. 日志 tag 建议：
+	- PMS：`Arm96Pretrans`
+	- helper：`Arm96PretransHelper`
+
+八、当前判断
+
+1. 设计阶段已经足够收口，可以进入动代码阶段。
+2. 不建议再继续堆方案文档。
+3. 下一步更合理的是进入最小实现切片。
+
+九、建议的编码切入顺序
+
+1. 先做 helper-only 骨架：
+	- 先把 `arm96_pretranslate_helper` 的 CLI、退出码、existing-check、tmp+rename 跑起来。
+	- 这样风险最低，也最容易独立验证。
+
+2. 再做 PMS-only 接线骨架：
+	- 先把消息、任务对象、日志和 property 开关接上。
+	- 初期可先调用 stub helper，避免同时调试 PMS 与翻译核心。
+
+3. 最后再接 runtime 命名统一和 sidecar 命中观测。
+
+十、下一轮 review 建议重点
+
+1. 复核 `.arm96` 是否正式作为唯一主扩展名，`.tango` 是否仅保留过渡兼容。
+2. 复核一期是否只做 `base.apk`，暂不碰 split / `.so`。
+3. 复核 helper 是否采用“包装层 + 现有 pretranslator core”，而不是直接复用旧 CLI。
+4. 复核 PMS 是否仅做异步投递与结果记录，不引入同步等待。
+5. 复核验证口径是否以“mustpass 不回归 + 可观测”作为当前阶段硬门槛。
+
+
+====================
+review 后优化摘要（2026-05-10）
+====================
+
+一、方案边界调整
+
+1. 原“PMS 直接异步调 native helper”的方案已调整为推荐主线：
+	- PMS 只负责捕获安装成功事件并分发。
+	- system_server 中新增 arm96 轻量 broker/AIDL。
+	- `app_process` 启动 Java 插件进程，向 broker 注册。
+	- 当时曾考虑让 Java 插件负责策略、队列、去重、限流和观测；二次 review 后已收缩为 `arm96j` 只做 bridge，策略/队列/观测放到独立 `arm96d`。
+	- native helper 只负责单输入 sidecar 生成，并由 `arm96d` 调用/包装 `tango_pretranslator.arm64`。
+
+2. 用户提出参考 vpick/vpkj 的插件模型后，已确认“app_process 注册 + 异步事件分发”的工作方式可参考；但不能依赖 gif/vpick 现有模块，策略最终不落在 Java 插件。
+
+3. PMS 不再负责翻译对象决策，不做 APK 内容扫描，不做 ABI 硬过滤；ABI 只作为事件 hint。
+
+二、关键风险收敛
+
+1. PMS `PackageHandler` 不允许直接 `waitFor` helper。
+2. helper stdout/stderr 必须 drain 或重定向，避免 pipe buffer 卡死。
+3. `.arm96` header/build/runtime compatibility 字段先实证，再进入硬校验。
+4. sepolicy 先做 stub smoke，再接真实翻译核心。
+5. 故障注入不再建议覆盖 `/system/bin/arm96_pretranslate_helper`，改为 debug property/test helper path。
+
+三、文档已同步更新
+
+1. `.claude/context/arm96_install_time_pretranslation_design.md`
+2. `.claude/context/arm96_install_time_pretranslation_contract.md`
+3. `.claude/context/arm96_install_time_pretranslation_landing_plan.md`
+4. `.claude/context/arm96_install_time_pretranslation_pms_pseudocode.md`
+5. `.claude/context/arm96_install_time_pretranslation_helper_framework.md`
+6. `.claude/context/arm96_install_time_pretranslation_validation_plan.md`
+
+四、当前推荐链路
+
+```text
+PMS install success
+	-> arm96 system_server broker
+		-> app_process Java bridge: arm96j
+			-> independent native daemon: arm96d
+				-> native arm96_pretranslate_helper
+				-> tango_pretranslator.arm64
+					-> base.apk.arm96
+runtime
+	-> .arm96 hit / stale reject / JIT fallback
+```
+
+五、进入编码前的新 review 重点
+
+1. 是否接受新增 arm96 专用 AIDL/broker，而不是复用 gif/vpick 命名。
+2. 插件进程 sepolicy 是先用 stub 宽松验证，还是直接设计独立 domain。
+3. helper 是否 Phase 1 先 fork/exec `tango_pretranslator.arm64`，Phase 2 再库化。
+4. PMS 事件 payload 是否足够：package、base path、uid、version、ABI hint、user、install/update。
+5. `.arm96` header 和 runtime 查找行为必须先实证冻结。
+
+
+====================
+二次 review 后架构冻结（2026-05-10）
+====================
+
+一、最新主线链路
+
+```text
+PMS install success
+	-> arm96 专用 system_server broker/AIDL
+		-> app_process Java bridge: arm96j
+			-> independent native daemon: arm96d
+				-> arm96_pretranslate_helper / tango_pretranslator.arm64
+					-> base.apk.arm96
+runtime
+	-> .arm96 hit / stale reject / .tango compatibility / JIT fallback
+```
+
+二、冻结决策
+
+1. `arm96d` 保持独立，不合入 `arm96server`。
+2. `arm96server` 继续作为 hardening enforcement plane，负责 PID tracking、anti-debug、guardian、key-fusion 等安全执行职责。
+3. install-time pretranslation、任务队列、sidecar 校验、helper 调用和未来远程授权控制面优先放在 `arm96d` / 同类 control daemon。
+4. `arm96j` 只做 Java bridge：注册、接收 broker 事件、HandlerThread 投递、转发给 `arm96d`。
+5. PMS 只做安装成功事件分发，不知道 helper/pretranslator/sidecar 细节。
+
+三、新增硬约束
+
+1. PMS/broker/插件相关代码必须是 arm96 自有 AIDL、service name、包名和 init rc。
+2. 不能依赖 gif/GifGuard/vpick/vpkj 现有插件机制，因为 gif 是本地定制模块，目标系统不能假设存在。
+3. 可以参考 vpick/vpkj/vpkd 的工作方式，但不能复用其 service、AIDL、Java 包名或业务类。
+4. 不允许在 arm96 主线代码中引用 `IGifGuardPlugin`、`gif_guard`、`GifGuardService` 等作为运行时依赖。
+
+四、文档同步结果
+
+以下文档已更新为独立 `arm96d` 口径：
+
+1. `.claude/context/arm96_install_time_pretranslation_design.md`
+2. `.claude/context/arm96_install_time_pretranslation_contract.md`
+3. `.claude/context/arm96_install_time_pretranslation_landing_plan.md`
+4. `.claude/context/arm96_install_time_pretranslation_pms_pseudocode.md`
+5. `.claude/context/arm96_install_time_pretranslation_helper_framework.md`
+6. `.claude/context/arm96_install_time_pretranslation_validation_plan.md`
+
+五、进入代码阶段前建议
+
+下一步若开始动代码，第一刀不接真实预翻译核心，先做 stub 链路：
+
+1. arm96 broker/AIDL 空实现。
+2. `arm96j` app_process 注册与事件转发。
+3. `arm96d` init 启动、Binder service 注册、`hello()` / `oneway onEvent(...)` 入队日志。
+4. 验证 PMS install success 不阻塞、不依赖 gif/vpick、不影响安装成功。
+
+
+

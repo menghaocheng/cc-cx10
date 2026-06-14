@@ -1,0 +1,23 @@
+
+/home/mhc/56T/sdk_check/cx10/android10是同一个AOSP项目的干净的工程目录，
+完整验证最终交付物，请在这个目录中进行
+
+要验证交付物是/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/release中的tgz
+
+
+
+后续迭代可能会重复这个验证过程，你可以记录一下这个信息
+
+现在请把版本号改成V0.57.0，然后重新构建交付物并在/home/mhc/56T/sdk_check/cx10/android10上验证
+
+
+准备继续在arm96上工作了，请深入理解arm96j arm96d的工作原理，看下当前为什么在安装32位应用的时候 生成的.arm96文件数量没有原生tango方案生成的.tango文件多：
+
+测试设备：adb connect 192.168.11.45:5004
+r7:/data/app # find ./ -name *.arm96|wc -l
+83
+r7:/data/app # 
+
+对比设备：adb connect 192.168.11.25:5004
+sky1_evb:/data/app/com.dragon.read-_MENOwgHfiuWcuOq20OoqA== # find ./ -name "*.tango" |wc -l
+127

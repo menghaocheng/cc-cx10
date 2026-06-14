@@ -1,0 +1,1382 @@
+
+issues/20260511.重启后应用丢失/logd/logcat
+
+你可以连接到测试上进一步定位：
+BMC：ssh root@192.168.33.250 #密码：vclusters@123
+在BMC上再通过adb连到目标宿主：
+adb -s 5.5.13.135 shell
+目标容器：
+RK8052B1202500035_a805a259-0d55-4240-be7b-d7439c6336af
+
+
+RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd
+
+
+我拿到的关键事实是：
+
+这个实例当前容器还在运行，没有发生你说的“最后一次重启后恢复”那一步
+docker 显示容器名就是 RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd，状态 Up 8 hours，StartedAt 是 2026-05-11 08:30:20，本次运行 RestartCount 是 0。
+
+运行中容器内部现在就是异常态
+我直接 docker exec 进去看，里面的结果是：
+
+boot reason: reboot,factory_reset,2026-05-11 08:32:12.746
+/data/app 是空的，只剩 . 和 ..
+pm list packages 里没有 com.delta.app.tt
+pm path com.delta.app.tt 也没有结果
+/data/system/packages.xml 时间是 2026-05-11 08:31:22
+/data/system/uiderrors.txt 时间是 2026-05-11 08:31:21
+uiderrors 开头明确就是：No settings file; creating initial state
+也就是说，这个实例在 5 月 11 日 08:31 到 08:32 发生过一次完整的包管理初始建账，当前运行态确实已经“看不到旧安装应用”了。
+
+但宿主侧同一个实例的持久数据里，旧应用还完整存在
+我在宿主挂载数据里看到：
+/data/android_data/.../app/com.delta.app.tt-... 是 5 月 7 日 20:31 的老目录
+/data/android_data/.../app/com.hm.fps-... 是 5 月 8 日 15:45 的目录
+packages.xml 也是 5 月 8 日 15:45
+uiderrors.txt 开头还是 5 月 7 日 19:48 的 initial state
+这两份视图不是“看错了同一目录”，而是真的不同
+我又从宿主侧直接读运行中容器的 /proc/1434/root/data，看到的是：
+/proc/1434/root/data/app 为空
+/proc/1434/root/data/system/packages.xml 是 5 月 11 日 08:31
+/proc/1434/root/data/system/uiderrors.txt 开头是 5 月 11 日 08:31 initial state
+而宿主挂载路径 /data/android_data/... 看到的是：
+
+/app 里有旧 APK
+packages.xml 是 5 月 8 日
+uiderrors.txt 开头是 5 月 7 日
+这已经足够说明：同一个实例，现在确实同时存在“运行态新 /data”和“宿主侧旧持久 /data”两套状态。
+
+所以第二个实例的结论可以直接写成一句话：
+
+这个实例在 2026-05-11 08:32 的 factory_reset 之后，运行中的容器已经切到了新的空包状态；但宿主侧仍然保留着旧的持久应用数据，应用并没有真的被正常卸载。
+
+
+核心结论是：第二个实例的问题根因不是应用被卸载，也不是 PackageManager 自己扫描丢了，而是实例运行中的 /data 挂载源被切到了另一套数据面。宿主保存的持久数据还在，但当前运行容器根本没在用那份持久数据。
+
+最关键的并排证据是这两行：
+
+宿主持久挂载:
+7:17 / /data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd ... - ext4 /dev/loop17
+/dev/loop17 -> /data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img
+
+运行中容器:
+259:6 /android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd /data ... - ext4 /dev/nvme0n1p6
+
+---- 
+
+1.Docker 配置和 OCI runtime 配置里，给这个实例写的 /data 源其实是正确的。
+都是宿主那份 image-backed 的持久路径，也就是 /data/android_data/实例ID。
+
+2.但运行中的容器并没有实际用到这份 image-backed 路径。
+容器内 /data 的 live mountinfo 显示，它实际绑到的是宿主 /data 分区底层上的一个普通子目录视图，设备号是 nvme 分区，不是 loop17。
+
+3.当前宿主侧这个实例的持久数据还在 loop17 上。
+而当前运行态容器的 /data 却来自 nvme 根分区里的另一套目录。
+这就是为什么：
+宿主还能看到旧 APK、旧 packages.list、旧 uiderrors；
+但运行中的实例里 /data/app 为空，packages.xml 和 uiderrors.txt 都在 08:31 重新生成。
+
+4.所以这里更像是一个挂载时序或挂载命名空间问题：
+容器创建 / 重启时，/data/android_data/实例ID 这条路径还没有指向 loop 镜像，
+或者容器创建所在的命名空间没有看到那条 loop 挂载，
+结果 bind mount 抓到了“底层被覆盖前目录”。
+后面宿主再把镜像挂到同一路径上，只会覆盖宿主视图，不会改变已经进入容器的旧 bind 结果。
+
+----
+
+补充收敛结论（2026-05-11 继续在线取证）：
+
+现在已经可以把“08:30 这波异常”收敛到宿主级重启，而不是单实例自己做了 factory_reset。
+
+新增时间闭环证据如下：
+
+1. 宿主 `uptime` 在 2026-05-11 16:59 显示 `up 8:29`。
+这等价于宿主大约在 2026-05-11 08:30:09 左右发生了整机重启。
+
+2. 之前抓到的 keepalive 锚点是 2026-05-11 08:30:19。
+也就是宿主重启后十秒级，iaas agent / keepalive 重新起来。
+
+3. go_iaas_agent 在 10:42:33 / 10:43:34 / 10:44:34 连续读取实例 RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd 的容器 uptime，分别约为：
+- 7933.49s
+- 7993.86s
+- 8053.90s
+
+把 10:44:34 对应的 8053.90s 倒推：
+实例启动时间约为 08:30:20。
+
+这和：
+- 宿主 `uptime` 倒推的 08:30:09
+- keepalive 重启锚点 08:30:19
+
+三者已经基本重合，说明 08:30 这次异常是宿主整体重启后，所有实例一起被重新拉起。
+
+4. 平台在 10:42~10:44 的巡检日志里，对 74ae 实例反复看到的仍然是“配置上正确”的 mount：
+`Source:/data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd Destination:/data`
+
+但 live 容器里实际看到的 /data 仍是错误数据视图。
+这进一步说明：
+不是 docker inspect / OCI 配置本身写错，
+而是宿主重启后的实例恢复过程中，live mount 结果和控制面看到的静态配置发生了偏离。
+
+因此当前最强结论可以更新为：
+
+2026-05-11 08:30 左右宿主发生整机重启；
+重启后云机实例恢复过程中，74ae 实例运行态拿到了一套错误的 /data 视图，导致 Android 以空数据目录重新建账，表现为 boot reason 带 factory_reset、/data/app 为空、packages.xml 在 08:31 重建；
+而宿主侧原本的持久应用数据实际上仍保留在 /data/android_data/... 对应的 loop 镜像里。
+
+所以“应用丢失”不是正常卸载，也不是原生 Android 自发 factory reset，更像是宿主重启后的实例恢复 / 挂载链路异常。
+
+当前还缺的最后一层证据，是宿主为什么在 08:30 重启：
+需要继续追宿主侧 reboot reason、kernel / watchdog / 平台运维控制面的原因日志。
+
+----
+
+继续深挖宿主 / BMC 重启原因后的补充结论：
+
+1. 宿主 reboot 事实已经被宿主自身 `wtmp/last -x` 再次坐实。
+
+宿主 `last -x` 关键信息：
+- `runlevel (to lvl 3) Thu May 7 14:10 - Mon May 11 08:31`
+- `ttyAMA2 Thu May 7 14:09 - Mon May 11 08:30`
+- `tty1 Thu May 7 14:10 - Mon May 11 08:31`
+- 本轮启动后新的 `ttyAMA2/tty1/runlevel` 都从 `Mon May 11 08:30/08:31` 开始
+
+这说明宿主在 2026-05-11 08:30~08:31 的确发生了一次真实 reboot，而不是单纯 agent 重启。
+
+2. 宿主侧用于追 reboot reason 的常规证据源基本都没有留下有效原因：
+
+- `/sys/fs/pstore` 为空，没有 ramoops / pstore 崩溃转储
+- `dmesg` 里没有当前可见的 reboot / panic / watchdog 关键词
+- `journalctl -b -1` 读不到上一轮 boot 尾部
+- 直接查 `/var/log/journal` 归档目录，`2026-05-11 08:20~08:35` 仍然没有可用正文
+
+也就是说，当前机器上没有保留下“宿主为什么在 08:30 reboot”的内核/系统日志直证。
+
+3. BMC / 控制面侧也没有检出明确的人工/平台下发 reboot 命令。
+
+已查：
+- `/var/log/mgmt_tool.log`
+- `/var/log/info.log`
+- `/var/log/daemon.log`
+- `/var/log/notice.log`
+- `/var/log/warning.log`
+- `/var/log/err.log`
+- 压缩轮转日志
+
+结果：
+- 没有打到 `server power reset/off/shutdown` 在 2026-05-11 08:30 附近的命令记录
+- 没有打到明确的 watchdog/panic/power-cycle 控制面指令证据
+
+4. BMC `err.log` 在 2026-05-11 整个凌晨到上午长期连续出现：
+`fan-smart: get temp fail! model=node_cpu`
+
+这类报错在 08:20~08:39 连续存在，但不是只在 08:30 突发，说明它更像长期监控异常/采集异常，不能直接作为 08:30 reboot 的触发根因。
+
+因此，到当前为止可以把结论分成两层：
+
+第一层（已坐实）：
+- 宿主在 2026-05-11 08:30 左右发生真实 reboot
+- reboot 后实例恢复链路异常，74ae 实例 live `/data` 使用了错误数据视图，导致 Android 以空数据目录重建包状态
+
+第二层（尚无直证）：
+- 当前宿主和 BMC 上都没有保留下能直接解释“为什么在 08:30 reboot”的明确原因日志
+- 现有证据不足以证明是人工下发 reboot、watchdog 复位、内核 panic、掉电，还是其他平台级动作
+
+换句话说：
+“08:30 reboot 导致实例恢复后挂错数据面”已经成立；
+但“08:30 reboot 本身是谁触发的”当前仍缺直接归因证据。
+
+
+机制上已经露头了：宿主的 /data/android_data/<实例> 是 shared 的 loop 挂载点，而我们之前从 Docker 配置看到容器 /data 的 bind Propagation:rprivate。这正好符合“容器先 bind 到底层空目录，宿主随后把 loop 镜像挂上去，但新 overmount 不再传播进容器”的经典分叉模型。下面我补两块直接证据：当前容器实际 mountinfo，以及负责 mount loop + docker start 的宿主实现路径。
+
+----
+
+补上直接证据后，这条“视图分叉”链路现在基本已经闭环：
+
+1. Docker 静态配置写的是宿主路径 `/data/android_data/<实例>`，但 propagation 明确是 `rprivate`。
+
+对 74ae 实例现场抓到的 `docker inspect` 关键字段：
+
+- `Source: /data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- `Destination: /data`
+- `Propagation: rprivate`
+
+2. 宿主当前这条实例路径已经是单独的 loop mount，而且不是底层 `/data` 本体，而是覆盖在其上的另一层 mount 对象。
+
+宿主 `mountinfo`：
+
+- `1289 211 7:17 / /data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd rw,relatime shared:652 - ext4 /dev/loop17`
+- 父挂载仍是：`211 24 259:6 / /data rw,relatime shared:106 - ext4 /dev/nvme0n1p6`
+
+也就是说，宿主肉眼看到的 `/data/android_data/<实例>`，此时已经是 `/dev/loop17` 提供的镜像视图。
+
+3. 但 live 容器里的 `/data` 并没有指到这个 `/dev/loop17`，而是仍然钉在底层 nvme 分区的子目录对象上。
+
+live 容器 `mountinfo`：
+
+- `1495 1377 259:6 /android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd /data rw,relatime shared:849 - ext4 /dev/nvme0n1p6`
+
+这行最关键的事实不是路径字符串，而是设备号和源挂载对象：
+
+- 宿主正确数据面是 `7:17 /dev/loop17`
+- live 容器 `/data` 却是 `259:6 /dev/nvme0n1p6`
+
+所以当前不是“同一挂载在宿主和容器里看起来不同”，而是容器 `/data` 从一开始就落在了底层 `/data` 分区的旧 mount 对象上，没有跟上宿主后续 overmount 出来的 loop 镜像。
+
+4. 宿主恢复链的实现面也已基本定位到 IaaS agent 本身，而不是 Docker 配置文件。
+
+现场进程树显示，这批恢复 agent 都是在宿主 reboot 后同一秒被重新拉起：
+
+- `08:30:18 /data/bin/AC_IaaS_agent`
+- `08:30:18 /data/bin/Virtual_Host_Agent`
+- `08:30:18 /data/bin/Virtual_Native_Agent`
+- `08:30:18 /data/bin/iaas_agent_keepalive`
+
+它们的父进程链是：
+
+- `/usr/lib/systemd/systemd` -> `runsv native_host_d` -> `Virtual_Host_Agent`
+- `/usr/lib/systemd/systemd` -> `runsv native_agent_d` -> `Virtual_Native_Agent`
+- `/usr/lib/systemd/systemd` -> `runsv native_iaas_d` -> `AC_IaaS_agent`
+
+也就是说，宿主 reboot 后是 runsv 管着的 native agent 套件在恢复实例，而不是某个临时手工脚本。
+
+5. 更关键的是，agent 二进制字符串里直接命中了我们需要的那条链：
+
+`/data/bin/AC_IaaS_agent` 内直接出现：
+
+- `docker start %s`
+- `/data/DockerMount/`
+- `tag:yaml.org,2002:/data/android_data`
+- `mount -o loop %s %s`
+- `/data/android_data/%s`
+
+`/data/bin/Virtual_Host_Agent` 内直接出现：
+
+- `docker inspect`
+- `docker start %s`
+- `docker restart`
+- `/data/DockerMount/`
+- `/data/android_data/`
+- `mkdir -p /data/android_data/`
+- `mount -o loop %s%s.img /data/android_data/%s`
+- `docker create -it --restart=always --name=%s ... -v /data/android_data/%s:/data ...`
+
+这说明“实例镜像文件 `/data/DockerMount/*.img` -> mount 到 `/data/android_data/<实例>` -> 再把这个路径 bind 给容器 `/data`”这套逻辑，本身就实现在宿主 IaaS agent 里。
+
+因此现在可以把问题机制明确成一句更硬的表述：
+
+宿主 08:30 reboot 之后，IaaS 恢复链重新拉实例时，容器 `/data` 对 `/data/android_data/<实例>` 的 bind 抓到的是底层 `/data` 分区上的旧目录对象；之后宿主侧又把 `/data/DockerMount/<实例>.img` loop mount 到同一路径上，但 live 容器没有切到新的 loop 挂载对象，于是宿主视图和容器视图永久分叉。
+
+这里最像的具体失配方式就是：
+
+- 恢复顺序是“先 create/start 容器，再完成 loop overmount”，或者
+- loop mount 虽然已完成，但完成在宿主另一个 mount 对象/传播域里，容器创建时继承到的不是最终那个 mount
+
+无论是哪一种，核心都不是 APK 被卸载，而是实例恢复时 `/data` bind 指向了错误 mount 对象。
+
+6. 还有两个辅助事实也支持这个判断：
+
+- `/data/container_persistent_data/<实例>/mounts` 和 `mountstats` 仍停留在 `2026-05-07 19:48`，没有反映 5 月 11 日这次 reboot 后的错误 live `/data` 视图
+- `go_agent.log` 与 2026-05-11 的归档日志里，没有直接打出针对 74ae 的 `mount -o loop` / `docker start` 细节，所以当前实现面证据主要来自 live mountinfo、进程树和 agent 二进制字符串，而不是操作日志正文
+
+所以到这一步，调查重点已经可以从“是否卸载过应用”完全切换成：
+
+- 为什么 IaaS 恢复链在 reboot 后把 bind `/data` 固定到了底层目录对象
+- `AC_IaaS_agent` / `Virtual_Host_Agent` 在恢复实例时，究竟是先做 `docker create/start` 还是先做 `mount -o loop`
+- 这条链路是否缺少 `mount --make-shared` / 正确 propagation，或在 runsv 多 agent 并发恢复时存在时序竞争
+
+换句话说，当前最硬结论已经不是“reboot 后挂错数据面”这么宽泛，而是：
+
+宿主 reboot 后，IaaS agent 恢复实例时对 `/data/android_data/<实例>` 这条宿主路径发生了 bind-before-final-overmount 的时序/传播失配，导致 live 容器 `/data` 固定在底层 `nvme0n1p6` 视图，而宿主后来看到的却是 `loop17` 镜像视图。
+
+----
+
+继续把启动链补到落盘目录级别后，可以再收紧一层：
+
+1. `runsv` 不是泛泛的父进程，而是明确由 `runsvdir /etc/service` 管理。
+
+现场进程链补充如下：
+
+- `830 1 ... runsvdir /etc/service`
+- `831 830 ... runsv native_host_d`
+- `832 830 ... runsv native_agent_d`
+- `834 830 ... runsv native_iaas_d`
+
+并且 live `/proc` 直接证明这三个 `runsv` 的工作目录分别是：
+
+- `/etc/service/native_host_d`
+- `/etc/service/native_agent_d`
+- `/etc/service/native_iaas_d`
+
+`/proc/<pid>/fd` 里还能看到它们各自打开的 `supervise/lock` 和 `supervise/control`，说明这确实是标准 runit/runsv service 目录，不是名字相像的普通进程。
+
+2. 宿主上确实存在对应的 service 定义，且 `run` 脚本非常薄，没有额外 shell 逻辑。
+
+已确认存在：
+
+- `/etc/service/native_host_d/run`
+- `/etc/service/native_agent_d/run`
+- `/etc/service/native_iaas_d/run`
+
+脚本内容分别是：
+
+- `native_host_d/run` -> `exec /data/bin/Virtual_Host_Agent >/dev/null 2>&1`
+- `native_agent_d/run` -> `exec /data/bin/Virtual_Native_Agent >/dev/null 2>&1`
+- `native_iaas_d/run` -> `exec /data/bin/AC_IaaS_agent >/dev/null 2>&1`
+
+这点很关键，因为它排除了“恢复动作藏在 run 脚本里”的可能：
+
+- `runsv` 层只负责拉起 agent
+- 真正的实例恢复、`loop mount`、`docker create/start` 逻辑仍然在 agent 二进制本体里
+
+因此当前对恢复顺序的判断边界也更清楚了：
+
+- 启动链路已经坐实到 `/etc/service/*/run -> /data/bin/*Agent`
+- 但 `mount -o loop` 与 `docker create/start` 的先后，仍需要继续从 `AC_IaaS_agent` / `Virtual_Host_Agent` 二进制内部或更细粒度运行时取证里拿直证
+
+换句话说，启动层已经闭环，剩下未闭环的只剩“agent 内部恢复时序”这一小段。
+
+----
+
+继续往 agent 二进制内部收缩后，又拿到一层对“恢复顺序”很有用的新事实：
+
+1. 宿主这两个关键 agent 都是未 strip 的 Go 可执行文件，而且带 `debug_info`。
+
+现场拉回本地后的 `file` 结果：
+
+- `AC_IaaS_agent`: `ELF 64-bit ... Go BuildID=... with debug_info, not stripped`
+- `Virtual_Host_Agent`: `ELF 64-bit ... Go BuildID=... with debug_info, not stripped`
+
+这意味着后续如果要继续追时序，不必盲猜汇编，直接可以沿 Go 符号和 `objdump` 调用图往下钻。
+
+2. `AC_IaaS_agent` 的符号表确认它同时暴露了“恢复”和“挂载”两个入口：
+
+- `IaasAgentGo/internal/app/container/controller/instanceLockChan.InstanceRestore`
+- `IaasAgentGo/internal/app/container/controller/instanceLockChan.ImageMount`
+- `IaasAgentGo/internal/app/container/controller/instanceLockChan.ContainerFactoryRestore`
+- `IaasAgentGo/internal/app/container/service/containerFunction.Restore`
+
+但从当前这几个入口的 `CALL` 级别 `objdump` 看，`InstanceRestore` / `ImageMount` 都先走进统一的：
+
+- `IaasAgentGo/internal/app/container.HandleCommonController`
+
+随后主要是接口分发调用，说明 AC_IaaS_agent 这边恢复逻辑被封在 common controller / 运行时分发表里，单靠入口函数本身暂时还看不到更细顺序。
+
+3. `Virtual_Host_Agent` 这边则已经出现了更清晰的顺序骨架。
+
+符号表直接暴露：
+
+- `VirtualHostAgent/virtualization.CreateContainer`
+- `VirtualHostAgent/virtualization.StartCon`
+- `VirtualHostAgent/virtualization.setStorage`
+- `VirtualHostAgent/virtualization.delImageStorageFile`
+
+而 `CreateContainer` 的 `CALL` 顺序里，已经能明确看到：
+
+- 前段调用了 `VirtualHostAgent/virtualization.setStorage`
+- 之后才继续一串 `VirtualHostAgent/utils.LocalCommand` / `LocalCommandSU`
+- 另有单独的 `VirtualHostAgent/virtualization.StartCon` 负责 start 路径
+
+这至少说明在 Host_Agent 里，“存储准备”和“容器 start”不是同一个黑盒动作，而是被拆成不同阶段 / 不同函数。
+
+4. `setStorage` 自身的调用图也支持它就是存储侧准备入口，而不是普通配置函数。
+
+`setStorage` 内部已看到：
+
+- `VirtualHostAgent/utils.PathExists`
+- `os.MkdirAll`
+- 多次 `fmt.Sprintf`
+- 多次 `VirtualHostAgent/utils.LocalCommand`
+
+这类组合很像：
+
+- 检查并创建 `/data/android_data/<实例>` 一类宿主路径
+- 拼接 shell 命令
+- 执行本地命令完成存储准备 / mount 相关动作
+
+同时 `CreateContainer` 在调用 `setStorage` 失败时，还会进入：
+
+- `VirtualHostAgent/virtualization.delImageStorageFile`
+
+这进一步说明 `setStorage` 处理的就是和镜像 / 挂载文件直接相关的前置步骤。
+
+因此，虽然现在还没有把 `mount -o loop` 那一条 shell 命令在反汇编里逐字抓出来，但恢复顺序已经可以比之前再收紧一层：
+
+- `Virtual_Host_Agent` 的 create 路径里，先有一个明确独立的存储准备阶段 `setStorage`
+- 后面才继续执行创建/启动容器所需的本地命令
+- `StartCon` 是单独存在的 start 路径，而不是和存储准备揉在一起
+
+所以当前更像的机制已经从“可能是先 bind 再 overmount”进一步收缩成：
+
+宿主恢复链里至少存在一个先做 storage setup、后做 container create/start 的显式分段；如果这两个阶段之间的 mount 对象 / propagation 没处理对，就足以造成当前看到的 `/data` 视图分叉。
+
+5. 当前还缺的最后一跳直证是：
+
+- `setStorage` 里具体拼出来的 shell 命令是否就是 `mount -o loop ... /data/android_data/<实例>`
+- `CreateContainer` 后半段具体拼出来的命令是否对应 `docker create -v /data/android_data/<实例>:/data`
+- `StartCon` 是否只负责 `docker start <实例>`
+
+但即使这三句命令正文还没完全抠出来，恢复时序的控制边界已经比之前清楚很多：
+
+- 存储准备在 `Virtual_Host_Agent` 的 `setStorage`
+- 容器创建在 `Virtual_Host_Agent` 的 `CreateContainer`
+- 容器启动在 `Virtual_Host_Agent` 的 `StartCon`
+- 更高层的恢复分派在 `AC_IaaS_agent` 的 `InstanceRestore` / `ImageMount` / `HandleCommonController`
+
+换句话说，剩下要补的不是“谁负责恢复”这种大方向，而只是这些已定位函数内部的命令级顺序细节。
+
+----
+
+继续做了一次最窄验证后，命令模板和函数名已经基本能直接对上：
+
+1. `Virtual_Host_Agent` 的符号表精确命中三段关键函数：
+
+- `VirtualHostAgent/virtualization.setStorage`
+- `VirtualHostAgent/virtualization.CreateContainer`
+- `VirtualHostAgent/virtualization.StartCon`
+
+2. 同一个二进制里直接存在三类关键命令模板原文：
+
+- `mount -o loop %s%s.img /data/android_data/%s`
+- `docker create -it --restart=always --name=%s ... -v /data/android_data/%s:/data ...`
+- `docker start %s`
+
+而且这三类字符串都在 `Virtual_Host_Agent` 本地样本里现场重新验证到了，不再只是先前远端 `strings` 的一次命中。
+
+3. 把这组字符串和前面已经拿到的函数/调用图合在一起后，当前最合理、也最硬的函数职责划分是：
+
+- `setStorage`：负责镜像/宿主目录准备，以及 `mount -o loop ... /data/android_data/<实例>` 这一侧的动作
+- `CreateContainer`：负责拼 `docker create ... -v /data/android_data/<实例>:/data ...`
+- `StartCon`：负责 `docker start <实例>`
+
+也就是说，恢复链里至少已经能明确拆成三段：
+
+- 先准备 storage 并挂到 `/data/android_data/<实例>`
+- 再用这个宿主路径去 `docker create` 绑定容器 `/data`
+- 最后单独 `docker start`
+
+4. 这让“问题出在哪一层”进一步收敛：
+
+既然 `mount -o loop`、`docker create -v /data/android_data/...:/data`、`docker start` 都在同一个 `Virtual_Host_Agent` 里按阶段出现，那么当前异常更像不是 Docker 自己的随机行为，而是 Host_Agent 这条恢复链在 storage setup 与 container create/start 交界处，对 mount 对象/传播域的处理出了时序问题。
+
+换句话说，到现在已经可以把怀疑点非常具体地压缩到：
+
+- `Virtual_Host_Agent.setStorage`
+- `Virtual_Host_Agent.CreateContainer`
+- `Virtual_Host_Agent.StartCon`
+
+这三个函数内部的命令执行顺序与挂载可见性，基本就是后续再追的唯一主战场。
+
+----
+
+继续把 `Virtual_Host_Agent` 这三个函数直接反编译后，恢复顺序现在已经不是推断，而是伪代码级别的直证：
+
+1. `setStorage` 的命令顺序已经完整展开。
+
+反编译直接显示它按如下顺序执行本地命令：
+
+- `dd if=/dev/urandom of=%s%s.img bs=1M count=0 seek=%d`
+- `losetup -f`
+- `losetup %s %s%s.img`
+- `mkfs.ext4 <loop设备>`
+- `losetup -d <loop设备>`
+- `mount -o loop %s%s.img /data/android_data/%s`
+
+也就是说，`setStorage` 的确不是泛化的“存储准备”，而是非常具体地：
+
+- 创建实例镜像文件
+- 借 loop 设备格式化 ext4
+- 最终把镜像直接 mount 到 `/data/android_data/<实例>`
+
+2. `CreateContainer` 里能直接看到调用顺序：
+
+- 先检查容器名是否已存在：`docker ps -a --format '{{.Names}}' |grep -Fx <name>`
+- 检查镜像是否存在：`docker images --format ... | grep ...`
+- 准备网络与 `/data/android_data/<实例>` 目录
+- 调 `getCount(...)`
+- 调 `setStorage(name, storage, ...)`
+- `setStorage` 失败时立刻进入 `delImageStorageFile(name, ...)` 做回滚
+- `setStorage` 成功后，才 `fmt.Sprintf(...)` 出完整的 `docker create -it --restart=always --name=%s ... -v /data/android_data/%s:/data ...` 命令
+- 然后通过 `VirtualHostAgent_utils_LocalCommand(...)` 真正执行 `docker create`
+
+这一步已经把关键时序钉死了：
+
+- `mount -o loop ... /data/android_data/<实例>` 在 `setStorage` 里
+- `docker create -v /data/android_data/<实例>:/data ...` 在 `CreateContainer` 后半段
+- 两者之间不是并列猜测关系，而是明确的先后调用关系：`CreateContainer -> setStorage -> docker create`
+
+3. 更关键的是，`docker start` 也不是另一个模糊路径，而是在 `CreateContainer` 里按条件直接跟在 `docker create` 后面。
+
+反编译显示：
+
+- `CreateContainer` 成功执行 `docker create` 后
+- 若 `*v219->Data.IsStart` 为真
+- 它就在同一个函数里继续 `fmt.Sprintf("docker start %s", name)`
+- 再走一次 `VirtualHostAgent_utils_LocalCommand(...)`
+
+所以就当前这版 Host_Agent 而言，最准确的顺序不是抽象的 `setStorage -> CreateContainer -> StartCon`，而是：
+
+- `CreateContainer` 内部先调用 `setStorage`
+- `CreateContainer` 自己执行 `docker create ... -v /data/android_data/<实例>:/data ...`
+- 若 `IsStart` 为真，`CreateContainer` 继续在本函数后半段直接执行 `docker start <实例>`
+
+4. `StartCon` 独立函数也存在，但它更多像是单独的“对已有容器执行 start”的接口，不是宿主恢复新建路径里唯一的 start 入口。
+
+它自己的伪代码也很清楚：
+
+- 先跑 `docker inspect --format='{{.State.Running}}-{{.State.Status}}' <name>`
+- 若不是已运行态
+- 再拼 `docker start <name>` 并执行
+
+这说明：
+
+- `StartCon` 是“已有容器单独 start”的公共接口
+- 但在实例恢复/新建这条主路径里，`CreateContainer` 本身就已经带有可选的 `docker start`
+
+5. 到这里，恢复顺序已经可以直接下最终工程序结论：
+
+- `Virtual_Host_Agent.CreateContainer` 是主控函数
+- 它先调用 `setStorage` 完成 `.img -> loop -> ext4 -> mount /data/android_data/<实例>`
+- 然后执行 `docker create -v /data/android_data/<实例>:/data ...`
+- 最后在 `IsStart` 条件满足时继续执行 `docker start <实例>`
+
+因此当前异常已经几乎可以定性成：
+
+宿主恢复链虽然代码顺序上确实是“先 mount，再 docker create，再 docker start”，但 live 结果仍落到了底层 `nvme0n1p6` 视图。这意味着问题更像不在“有没有先后顺序”，而在“setStorage 完成的那个 mount 对象，是否就是随后 docker create 所绑定到的同一个宿主 mount 对象 / 同一个传播域”。
+
+换句话说，怀疑点已经从“是不是先 create 后 mount”进一步收缩成：
+
+- `setStorage` 完成的 mount 是否落在 Docker create 可见的同一个 namespace / mount object 上
+- `/data/android_data/<实例>` 在 `docker create` 执行瞬间，绑定到的是 loop overmount 还是底层被覆盖前目录
+- 宿主上是否存在另一层 mount namespace / propagation 失配，导致虽然代码顺序正确，容器最终拿到的却不是 `setStorage` 刚挂好的那个 loop 视图
+
+----
+
+继续补了几个“足以改变判断边界”的关键验证后，需要把结论再收紧一次：
+
+1. `LocalCommand` / `LocalCommandSU` 并没有做 `nsenter` 之类的 namespace 切换。
+
+`Virtual_Host_Agent` 反编译显示：
+
+- `LocalCommand` 本质上是 `sh -c <command>`
+- `LocalCommandSU` 本质上是 `su -c <command>`
+
+其中：
+
+- `setStorage`
+- `docker create ... -v /data/android_data/%s:/data ...`
+- `docker start %s`
+
+这些关键命令都走的是 `LocalCommand`，也就是普通 `sh -c` 执行路径，不是一个命令在宿主 namespace、另一个命令在某个 `nsenter`/容器 namespace 里执行。
+
+所以“wrapper 本身切了 namespace，导致 mount 和 docker create 不在同一执行上下文”这个猜测，当前没有证据支持。
+
+2. `dockerd`、`Virtual_Host_Agent`、`containerd-shim`、PID 1 当前都在同一个 mount namespace。
+
+现场检查到：
+
+- `dockerd`、`Virtual_Host_Agent`、`containerd-shim`、`init` 的 `ns/mnt` 都是同一个 `mnt:[4026531841]`
+- 它们当前看到的 `/data/android_data/<74ae>` 也一致，都是宿主 `loop17` 那个 mount
+
+这说明：
+
+- 现在这一刻，并不存在 “agent 在一个 mount ns，dockerd 在另一个 mount ns” 的直接证据
+- 所以之前那条“dockerd 在别的 namespace 里做 bind”的假设，当前需要降级，不再是最优先解释
+
+3. 更关键的修正是：`74ae` 这次 08:30 后的恢复，并不是新建容器对象，而是旧对象被重新 start。
+
+`docker inspect` 关键字段：
+
+- `Created: 2026-05-07T11:59:11.888609494Z`
+- `StartedAt: 2026-05-11T00:30:20.24237647Z`（对应北京时间约 08:30:20）
+- `RestartCount: 0`
+
+这说明：
+
+- 这个容器对象本身 5 月 7 日就已经创建好了
+- 5 月 11 日 08:30 只是旧对象被重新启动
+- 所以当前异常实例并不是走“5 月 11 日重新 `docker create` 一个全新对象”的那条路径
+
+这点非常重要，因为它意味着：
+
+- `Virtual_Host_Agent.CreateContainer -> setStorage -> docker create -> docker start`
+
+这条顺序虽然已经被我们坐实，但它更像“新建/创建实例”路径，不一定就是 74ae 这次 reboot 后恢复的真实主路径。
+
+4. 对应旧对象恢复，AC_IaaS_agent 这边已经出现了另一条更贴近现场的调用链：
+
+- `containerFunction.Restore`
+- `pkg/containerUtils.ContainerStart`
+- `pkg/dockersdk.(*DockerManager).StartContainer`
+
+其中：
+
+- `Restore` 在 `ContainerStart` 之前会做 `CheckContainerStatus`、`ContainerStop`、目录检查/创建、`DownloadFile`，以及至少两次 `fmt.Sprintf + execCommand`
+- `ContainerStart` 则明确调用 `DockerManager.StartContainer`
+
+这说明：
+
+- 对 74ae 这种“旧容器对象 reboot 后恢复”的路径，主线更像是 AC_IaaS_agent 的 `Restore/ContainerStart`
+- 而不是 Virtual_Host_Agent 的 `CreateContainer`
+
+5. 因此到当前这一步，问题模型需要再修正成更贴近现场的一版：
+
+- 新建实例路径：已经坐实是 `setStorage -> docker create -> 可选 docker start`
+- 74ae 这次 reboot 恢复路径：更像是“旧对象 restore + start”，不是重新 create 新对象
+
+所以现在最值得继续怀疑的，不再是 `CreateContainer` 里 `mount` 和 `docker create` 的先后顺序，而是：
+
+- 旧容器对象在宿主 reboot 后被 `DockerManager.StartContainer` 启动时，它原先绑定的 `/data` source mount object 究竟引用的是哪一层对象
+- 在旧对象 start 之前，宿主为 `/data/android_data/<实例>` 做的 remount / image restore 是否已经完成
+- 旧对象的 bind source 是否在 container create 的历史时刻就已经钉到了底层目录，而 reboot 后只是再次沿用了这个旧绑定关系
+
+换句话说，调查主战场又进一步收敛成：
+
+- “新建路径顺序是否错误” 现在已经不是最优先怀疑点
+- 更像是“旧容器对象的历史 bind source + reboot 后 restore/start 时机”这一类问题
+
+----
+
+继续把 reboot 当时的启动时间线补齐后，这个“旧对象恢复”模型又被进一步加强：
+
+1. `74ae` 这个容器对象明确具备 Docker 自启动条件。
+
+`docker inspect` 关键字段：
+
+- `RestartPolicy: always`
+- `MaximumRetryCount: 0`
+- `Created: 2026-05-07T11:59:11.888609494Z`
+- `StartedAt: 2026-05-11T00:30:20.24237647Z`（北京时间约 `08:30:20`）
+
+这意味着宿主 reboot 后，即使没有 agent 显式再去 create，它本身也符合被 `dockerd` 自动重新拉起的条件。
+
+2. boot 时间线也和“dockerd 自动恢复旧对象”高度一致：
+
+- `PID 1 / init`: `08:30:08`
+- `containerd`: `08:30:17`
+- `dockerd`: `08:30:17`
+- `runsvdir /etc/service`: `08:30:18`
+- `AC_IaaS_agent`: `08:30:18`
+- `Virtual_Host_Agent`: `08:30:18`
+- 容器 `StartedAt`: `08:30:20`
+
+这条时间线的关键信号是：
+
+- `dockerd/containerd` 先于 agent 起来
+- agent 和 dockerd 之间只差 1 秒
+- 容器启动时间又紧跟在它们后面 2 秒左右
+
+从系统行为上看，这非常符合“`dockerd` 在宿主 boot 后按 `restart=always` 自动恢复老容器对象”的形态。
+
+3. 结合前面已经确认的事实：
+
+- 这个对象不是 5 月 11 日新 create 的，而是 5 月 7 日老对象
+- `dockerd` 与 agent 当前在同一个 mount namespace
+- 新建路径里的 `setStorage -> docker create -> docker start` 虽然代码顺序正确，但不一定是 74ae 这次的真实路径
+
+现在最强的现场解释已经进一步偏向：
+
+宿主 reboot 后，`dockerd` 按 `restart=always` 自动去 start 这个 5 月 7 日创建的旧容器对象；而宿主侧针对 `/data/android_data/<实例>` 的 image remount / restore 动作，与这个 auto-start 的时机没有完全对齐，于是旧对象在 start 时拿到的仍是底层目录对象，之后宿主再把同一路径 overmount 成 loop 视图，最终形成“宿主看到 loop17，live 容器看到 nvme0n1p6 子目录”的分叉。
+
+4. 这会把当前主怀疑点再收缩一层：
+
+- 不再优先怀疑 `Virtual_Host_Agent.CreateContainer` 里的 `docker create` 路径
+- 更优先怀疑 `dockerd` 的老对象 auto-start 与宿主 remount `/data/android_data/<实例>` 之间的竞争窗口
+
+换句话说，最像的机制已经从“agent 内部命令顺序错误”进一步收敛成：
+
+宿主 reboot 后，老容器对象被 `dockerd` 依据 `restart=always` 很早自动拉起，而 `/data/android_data/<实例>` 对应的 loop 镜像恢复/重挂尚未稳定完成，导致旧对象 start 时绑定到的是底层目录对象；之后宿主 overmount 成 loop17，只改变了宿主视图，没有改掉 live 容器已持有的 `/data` 挂载结果。
+
+----
+
+继续把 AC_IaaS_agent 里的“业务 restore”与“真正挂载 helper”拆开之后，又能再排掉一条误导分支：
+
+1. `containerFunction.restore` 里那两次 `fmt.Sprintf + execCommand`，现在看起来更像业务恢复/文件落盘逻辑，不像 boot 时的数据面 remount。
+
+静态还原到的命令模板里，至少有：
+
+- `tar -xf %s -C %s`
+- `mv %s %s`
+
+而不是我们之前更关心的 loop mount / bind mount 命令。
+
+2. AC 里真正和 loop mount 强相关的 helper 其实是另一组函数：
+
+- `containerFunction.mountDataImg`
+- `imgService.Mount`
+- `imgService.mount`
+- `pkg/utils.UmountLazy`
+
+这些函数对应的精确命令字符串已经能看到：
+
+- `mount -o loop %s %s`
+- 以及配套的 `umount` / `resize2fs` / `e2fsck` / `losetup` 一类字符串
+
+3. 更关键的是，`mountDataImg` 的调用者并不是 `Restore`，而是迁移/回滚相关路径：
+
+当前定位到的三个调用点都落在：
+
+- `containerFunction.RollbackMigration`
+- `containerFunction.migrationMount`
+- `containerFunction.migrationRestore`
+
+也就是说：
+
+- `containerFunction.restore` 负责的是“业务数据 restore / 解包 / 落盘 / 再 start”这一类逻辑
+- `mountDataImg` 才是 AC 里真正做 loop image mount 的 helper
+- 但 `74ae` 这次 reboot 恢复线，当前没有证据表明它走到了这些 migration/mountDataImg 路径
+
+4. 这会再把调查主线收紧一层：
+
+- 不应再把 `containerFunction.restore` 当成宿主 reboot 时为 `/data/android_data/<实例>` remount loop 镜像的主逻辑
+- 也不应把它和 `Virtual_Host_Agent.CreateContainer` 那条“新建实例”路径混为一谈
+
+到当前为止，更贴近现场的模型已经变成：
+
+- `74ae` 是 5 月 7 日创建的旧容器对象
+- 宿主 5 月 11 日 reboot 后，`dockerd` 依据 `restart=always` 很早自动去 start 这个旧对象
+- AC 的 `restore` 更像业务 restore，而非 boot remount
+- AC 里真正做 loop mount 的 `mountDataImg` 目前只在 migration/rollback 一类路径上看到调用
+
+因此当前最强判断是：
+
+这次异常更像是 Docker 对旧容器对象的 auto-start 与宿主底层 `/data/android_data/<实例>` 挂载恢复之间发生了竞争，而不是某个显式的 AC/Host_Agent “restore”函数先后顺序写错。
+
+换句话说，现在主战场已经进一步压缩到：
+
+- `dockerd` 对旧对象的 auto-start 时机
+- 宿主在 boot 初期何时把 `/data/android_data/<实例>` 切回 loop 镜像
+- 两者之间是否存在短暂窗口，让旧对象 bind 到了底层目录对象并沿用到整个运行期
+
+----
+
+最后再补一个很有区分度的调用关系，可以把 Host_Agent 这边彻底收口：
+
+1. `Virtual_Host_Agent.setStorage` 当前只找到一个调用者，而且就是 `VirtualHostAgent/virtualization.CreateContainer`。
+
+现场静态结果：
+
+- `CALL VirtualHostAgent/virtualization.setStorage` 只出现 1 次
+- 调用点地址正落在 `VirtualHostAgent/virtualization.CreateContainer` 内部
+
+没有看到：
+
+- `RebootContainer`
+- `StartCon`
+- `StopCon`
+- 其他 host-side restart/query 路径
+
+对 `setStorage` 的复用调用。
+
+2. 这条关系非常关键，因为它意味着：
+
+- `setStorage` 是“新建容器”路径专属的 storage setup helper
+- 它不是一个在 reboot 后对旧对象普遍复用的宿主 remount 入口
+
+换句话说，如果 `74ae` 这次在 2026-05-11 08:30 只是“旧对象 auto-start”，那么当前没有证据表明它会再次走到 `Virtual_Host_Agent.setStorage`。
+
+3. 结合前面已经坐实的事实：
+
+- `74ae` 是 5 月 7 日创建的旧对象
+- reboot 后它符合 `restart=always` 自动拉起条件
+- `dockerd/containerd` 比 agent 更早起来
+- `setStorage` 只属于 `CreateContainer` 新建路径
+
+当前对现场最贴近的一版理解已经可以进一步压缩成：
+
+- `Virtual_Host_Agent.CreateContainer -> setStorage -> docker create` 这条链是“新建实例”逻辑
+- `74ae` 这次异常更可能完全没有走这条链
+- 问题更像发生在：旧对象被 `dockerd` 自动 start 时，它引用的 `/data` source mount object 已经落错或尚未被宿主恢复到最终 loop 视图
+
+因此，到这里为止，`Virtual_Host_Agent` 这条线已经基本完成“排除法”任务：
+
+- 它帮助我们证明了新建路径的代码顺序没反
+- 也帮助我们证明了 `setStorage` 并不是旧对象 reboot 恢复的通用入口
+
+后续如果继续深挖，主战场就应当集中到：
+
+- `dockerd` 对 `restart=always` 老对象的自动恢复行为
+- 宿主 boot 过程中 `/data/android_data/<实例>` 真实何时恢复为 loop mount
+- 以及旧对象 bind source 在 start 时到底引用了哪个宿主 mount object
+
+----
+
+补一组直接针对 `74ae` 本体的同实例时间证据，这一组比前面的“不同实例 dumpe2fs 示例”更有约束力：
+
+1. `74ae` 的 Docker 运行时间戳：
+
+- `docker inspect --format '{{.State.StartedAt}}'` -> `2026-05-11T00:30:20.24237647Z`
+- 折算北京时间约 `08:30:20.242`
+
+2. `74ae` 对应镜像文件 `/data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img` 的 ext4 超级块时间：
+
+- `Filesystem created: Thu May 7 19:47:56 2026`
+- `Last mount time: Mon May 11 08:30:20 2026`
+- `Last write time: Mon May 11 08:30:20 2026`
+- `Mount count: 2`
+
+3. `74ae` 当前 live 容器里 PID 1 的时间，以及宿主上对应容器 init 进程的绝对启动时间：
+
+----
+
+2026-05-12 补充：在正确板卡环境 `BMC 192.168.33.250 -> adb -s 5.5.13.135:5555 shell` 上做了“宿主重启 -> 回连 -> 遍历全部实例检查 /data/app”压测，结果首次把问题从“历史异常样本”推进到了“可现场复现”。
+
+压测脚本日志：
+
+- `/home/mhc/56T/cx10/tmp_reboot_stress_5.5.13.135_20260512_185737.log`
+
+本轮压测的停止条件是：
+
+- 任一实例 `/data/app` 缺失，或
+- `/data/app` 目录存在但条目数为 0
+
+压测结果：
+
+- Round 1 clean
+- Round 2 clean
+- Round 3 clean
+- Round 4 clean
+- Round 5 clean
+- Round 6 clean
+- Round 7 clean
+- Round 8 clean
+- Round 9 首次复现并自动停止
+
+也就是当前样本为：
+
+- 1/9 轮复现
+- 粗略复现率约 11.1%
+
+第 9 轮的关键窗口如下：
+
+- `ROUND 9 REBOOT 2026-05-12 19:25:54`
+- `ROUND 9 host_back 2026-05-12 19:27:12`
+- 异常实例：`RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef`
+- 首条异常结果：`RESULT|RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef|running|2026-05-12T11:26:59.42698228Z||MISSING|NA`
+- 停止标记：`STOP|round=9|reason=anomaly_detected`
+
+这一轮复现时，`ddcf...` 的现场证据是：
+
+- 容器仍处于 `running`
+- 但容器内 `/data/app` 已经缺失，故被脚本标记为 `MISSING|NA`
+- `/data/system/packages.xml` 仍在，时间为 `2026-05-12 19:25`
+- `/data/system/uiderrors.txt` 仍在，时间为 `2026-05-12 19:25`
+- `uiderrors.txt` 头部仍然是 `2026/5/7 下午7:47: No settings file; creating initial state` 以及一串 duplicate shared/app id
+- 同时抓到该实例容器进程的 `/data` mount 行：
+	- `MOUNT|RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef|3163 1710 7:18 / /data rw,relatime shared:1465 - ext4 /dev/loop18 rw,seclabel,resuid=1000,resgid=1000`
+
+这里有一个很重要的新修正：
+
+- 这次第 9 轮复现时，`ddcf...` 抓到的 `/data` 不是之前 `74ae` 那种“live 容器拿到底层 nvme 目录、宿主看到 loop 镜像”的分叉形态
+- 相反，这次脚本当场抓到的容器 `/data` 已经是 `7:18 /dev/loop18`
+- 也就是说，这次复现不是“容器挂到了错误的底层设备”，而是“容器已经挂在正确的 loop 镜像上，但镜像内的 `/data/app` 本身处于缺失状态”
+
+因此，5 月 12 日这轮复现和此前 5 月 11 日 `74ae` 的历史异常，至少在文件系统层面并不完全同型：
+
+- `74ae` 历史样本更像：宿主/容器视图分叉，容器 `/data` 落到底层 `nvme0n1p6` 子目录
+- `ddcf...` 第 9 轮复现更像：容器 `/data` 已正确落到 loop18，但镜像内数据状态异常，表现为 `/data/app` 缺失
+
+复现后我又立刻回到宿主补抓了 `ddcf...` 当前 live 现场，结果又出现了一个新的时间维度现象：
+
+- 当时容器仍是 `running`
+- `docker inspect` 显示其 `/data` mount 仍是 `/data/android_data/RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef -> /data`
+- `Propagation` 仍是 `rprivate`
+- 宿主和容器当前看到的 `packages.xml` inode 与修改时间一致
+- 容器内 `/data/app` 又重新存在，里面重新能看到：
+	- `com.delta.app.tt-...`
+	- `com.hm.fps-...`
+
+也就是说，这次第 9 轮异常不是一个稳定停留的终态，而更像是：
+
+- 宿主重启回连后的某个窗口里，实例 `ddcf...` 暂时进入了 `/data/app` 缺失状态
+- 但在随后几分钟内，live 容器文件视图又重新回到了“宿主与容器一致、/data/app 存在两个应用目录”的状态
+
+这会把问题边界再推进一层：
+
+- 现在已经不能只把问题概括成“reboot 后永久挂错数据面”
+- 至少在 `ddcf...` 这个新复现样本上，更像是“boot/recovery 初期存在短暂异常窗口，随后数据视图或数据内容又恢复”
+
+因此当前应把两类现象拆开看：
+
+1. 历史 `74ae` 样本：更像长期稳定的宿主/容器数据面分叉
+2. 新复现 `ddcf...` 样本：更像 boot 后短时进入异常数据态，随后又恢复为宿主/容器一致
+
+下一步若继续深挖，重点应落在：
+
+- `ddcf...` 在第 9 轮 reboot 后到恢复正常之间，是否发生了容器内 Android 服务重建/补齐 `/data/app`
+- 该恢复是容器内 framework 行为、外部 agent 行为，还是容器对象本身发生了再次 restart
+- `packages.xml` / `uiderrors.txt` / `/data/app` 三者在异常窗口和恢复窗口之间，究竟是哪一个先变化
+
+----
+
+对 `ddcf...` 做了一次更窄的后续核查后，这个“恢复”现在可以再收紧成一句更准确的话：
+
+- 它不是同一运行期内自己把 `/data/app` 补回来了
+- 而是异常窗口之后，这个容器对象又发生了一次新的容器级启动，随后 Android 服务起来，`/data/app` 才恢复为存在状态
+
+关键时间证据如下：
+
+1. 第 9 轮异常日志里的启动时间：
+
+- `RESULT|RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef|running|2026-05-12T11:26:59.42698228Z||MISSING|NA`
+
+这说明在异常窗口被脚本抓到时，这个容器当时的 `StartedAt` 是：
+
+- `2026-05-12T11:26:59.42698228Z`
+
+2. 随后现场补抓到的当前 live 容器状态则变成：
+
+- `docker inspect` -> `StartedAt=2026-05-12T14:31:37.21278842Z`
+- `RestartCount=0`
+- `Pid=1945`
+- `Status=running`
+
+3. 宿主 `ps` 对应 PID 1945 的启动时间也和上面一致：
+
+- `Tue May 12 22:31:36 2026`
+
+换句话说：
+
+- 异常窗口里看到的是一轮较早的容器运行期（StartedAt 约 19:26 对应本地时间）
+- 后来现场补抓时，容器已经变成另一轮更晚的新运行期（StartedAt 约 22:31 对应本地时间）
+
+因此，“异常后恢复”的直接机制至少可以先坐实一半：
+
+- `ddcf...` 在异常窗口之后，确实发生过一次新的容器级启动
+- 当前 `/data/app` 重新出现，更像是这次后续重启后的结果，而不是同一轮异常运行期内部自恢复
+
+4. 这次后续启动后的系统状态也和“重新起来后恢复正常”一致：
+
+- `service list | grep package` 已能看到 package service
+- `sys.boot_completed=1`
+- `init.svc.servicemanager=running`
+- `init.svc.zygote=running`
+- `/data/app` 存在
+- `/data/system/packages.xml` 修改时间已经更新到后续启动之后
+- `/data/system/uiderrors.txt` 修改时间也更新到后续启动之后
+
+因此，针对 `ddcf...` 这个新样本，问题模型还要再修正一层：
+
+- 第 9 轮 reboot 后，实例先进入了一次“容器 running，但 `/data/app` 缺失”的异常窗口
+- 随后该实例又经历了一次新的容器级启动
+- 在后续这次启动中，Android 核心服务正常起来，`/data/app` 与 package service 一并恢复
+
+这意味着当前要重点追的，不只是“为什么会进入异常窗口”，还包括：
+
+- 这次把 `ddcf...` 从异常窗口拉回正常态的二次启动，是谁触发的
+- 是 Docker `restart=always` 自动重启、外部 agent 重新 start，还是容器内 init/framework 崩溃后被外层重新拉起
+- 第 9 轮异常窗口与后续 22:31 这次启动之间，是否还能在宿主日志中找到对应的 `docker start` / restore / health-check 线索
+
+对这最后一条再补一层后，`22:31` 这次恢复的触发方现在也基本坐实了：
+
+- 更像是宿主 reboot 后 `iaas_agent` 显式执行了 `RestoreInstance -> Start container`
+- 不像是单纯依赖 Docker `restart=always` 自动把老对象拉起
+
+关键证据链如下：
+
+1. 宿主当前时间基准：
+
+- `2026-05-12 23:04:09 CST (+0800)`
+- 当时 `uptime` 约 32 分钟
+
+这说明宿主在 `22:31~22:32` 左右发生过一次新的宿主级重启。
+
+2. `ddcf...` 当前对象仍是老容器对象，不是新 create：
+
+- `Created` 仍在 `2026-05-07`
+- 当前 `StartedAt=2026-05-12T14:31:37.21278842Z`
+- `RestartCount=0`
+
+也就是说，这里不是“22:31 新建了一个全新容器对象”，而是老对象在宿主新一轮启动后再次被 start。
+
+3. 更关键的是，`go_iaas_agent.log` 里能直接把这次启动串起来：
+
+- `14:31:17` 左右：agent 启动并开始 `ScanAllContainers`
+- `14:31:36` 左右：日志命中 `RestoreInstance`，实例就是 `ddcf5039-...`
+- `14:31:37` 左右：命中 `Start container success`
+- 紧接着：命中 `RestoreInstance success`
+
+这条时间线和当前 `docker inspect` 的 `StartedAt=14:31:37Z` 是直接对齐的。
+
+因此，针对 `ddcf...` 这个新样本，现在可以把“异常后恢复”再落成一句更具体的话：
+
+- 第 9 轮异常窗口之后，实例后来又经历了一次宿主级 reboot
+- 在这次宿主新启动后的恢复阶段，`iaas_agent` 通过 `RestoreInstance` 显式把这个老容器对象重新拉起
+- 当前看到的“/data/app 恢复存在、package service 正常、boot_completed=1”，更像是这次 agent restore 之后的新运行期结果
+
+所以这里和最开始怀疑的“dockerd 自己按 restart=always 拉起老对象”相比，当前更贴近现场的一版解释是：
+
+- 宿主 reboot 后的实例恢复，是由 `iaas_agent` 扫描并显式触发的 restore/start 主导
+- `restart=always` 仍然是容器对象具备的属性，但至少对 `22:31` 这次恢复，现场证据更偏向 agent 主动恢复而不是 dockerd 被动自拉起
+
+再补一条对整个时序判断很关键的新事实：
+
+- `ddcf...` 第 9 轮异常，并不是发生在宿主长时间稳定运行的背景下
+- 它落在一段连续宿主短周期 reboot 风暴里
+
+直接命中的 `last -x` 关键片段如下：
+
+- `shutdown system down Tue May 12 19:19 - 19:22`
+- `runlevel (to lvl 3) Tue May 12 19:20 - 19:22`
+- `shutdown system down Tue May 12 19:22 - 19:26`
+- `runlevel (to lvl 3) Tue May 12 19:23 - 19:26`
+- `shutdown system down Tue May 12 19:26 - 19:29`
+- `runlevel (to lvl 3) Tue May 12 19:27 - 19:29`
+- `shutdown system down Tue May 12 19:29 - 22:31`
+- `runlevel (to lvl 3) Tue May 12 19:30 - 22:31`
+- `shutdown system down Tue May 12 22:31 - ...`
+- `runlevel (to lvl 3) Tue May 12 22:31 - still running`
+
+这意味着：
+
+- 第 9 轮脚本在 `19:25:54` 发起 reboot
+- `19:27:12` 回连后抓到 `ddcf...` 为 `running + /data/app MISSING`
+- 但宿主自身在 `19:19~19:31` 这十几分钟里其实一直在连续 reboot / 短暂起机 / 再次 down 的循环中
+
+所以这个新样本的异常背景，不应再被理解成“宿主单次干净 reboot 后实例稳定进入异常态”，而更像：
+
+- 宿主在 reboot 风暴里多次短暂起来
+- `ddcf...` 在其中一个短暂起机窗口里被脚本抓到 `running` 但 `/data/app` 缺失
+- 随后宿主继续 down / up
+- 直到 `22:31` 这轮宿主重启完成后，`iaas_agent` 才通过 `RestoreInstance` 把它重新拉回正常态
+
+结合前面的结论，`ddcf...` 当前更贴近现场的一版模型应改写成：
+
+- 异常窗口本身发生在宿主连续重启风暴中
+- 后续恢复不是同一运行期内自愈
+- 也不是简单一次 `restart=always` 自拉起就解释完
+- 更像是宿主经过多轮 reboot 后，在最后一轮 `22:31` 重启完成时，由 `iaas_agent` 的显式 restore 统一收敛回正常态
+
+因此，`ddcf...` 这个样本和 `74ae` 历史样本的区别需要再说得更明确：
+
+- `74ae` 更像“单轮宿主 reboot 后，live /data 视图长期分叉”
+- `ddcf...` 更像“宿主连续 reboot 风暴期间，实例在某一短暂运行窗口内呈现异常数据态；最终由后续宿主 reboot + agent restore 拉回正常”
+
+----
+
+继续追 `19:19~19:31` 和 `22:31` 这两段 reboot 风暴的触发方后，当前可以把“谁触发了宿主重启”这层结论也收紧到：
+
+- 目前仍然没有找到人工或平台控制面下发 reboot/power/reset 的直证
+- 现有证据更像“非指令式硬重启”
+- 在没有 pstore / crash dump / 上一轮 journal 正文的情况下，当前最像的是宿主内核 panic 或硬件 watchdog 超时导致的物理重置
+
+能支撑这一点的关键证据是：
+
+1. BMC / 控制面日志没有命中对应时间窗内的 power/reset 指令。
+
+目前检查范围包括：
+
+- `mgmt_tool.log`
+- `info.log`
+- `daemon.log`
+- `notice.log`
+- `warning.log`
+- `err.log`
+- 以及轮转压缩日志
+
+在 `2026-05-12 19:19~19:31` 与 `22:31` 附近，都没有打到明确的：
+
+- `server power reset`
+- `server power off`
+- `reboot`
+- `shutdown`
+
+这意味着，至少当前没有证据支持“人为/BMC/平台控制面显式下发了这几轮 reboot”。
+
+2. 宿主侧保留下来的重启形态，本身也更像硬重启而不是正常关机。
+
+`last -x` 已经坐实：
+
+- `19:19 -> 19:22`
+- `19:22 -> 19:26`
+- `19:26 -> 19:29`
+- `19:29 -> 22:31`
+- `22:31 -> 当前`
+
+其中前面几轮是非常短的 2~3 分钟运行窗口，整体形态更像：
+
+- 系统起来
+- 很快再次 down
+- 再起来
+- 再次 down
+
+这种节奏和“人工正常重启”不太像，反而更像：
+
+- 内核 panic 后自动硬复位
+- watchdog 超时反复拉起
+- 或更底层硬件/电源/热保护侧的非正常重置
+
+3. 宿主侧用于给出直接归因的常规证据源，当前仍然没有留下正文：
+
+- `/sys/fs/pstore` 为空
+- `journalctl` 在目标时间窗没有能直接解释 reboot 原因的落盘正文
+- 常规 crash/panic 留痕（如 crash 目录、上一轮 boot 尾日志）当前没有形成可用直证
+
+也正因为这几类关键正文同时缺失，才会让当前判断更偏向“系统来不及正常落日志就已经被硬重置”。
+
+因此，这一层现在最准确的表述应是：
+
+- 已坐实：宿主在 `19:19~19:31` 发生过 reboot 风暴，并在 `22:31` 再次 reboot
+- 已排除：当前没有证据表明是 BMC / 平台控制面显式下发的 reboot/power/reset
+- 尚无直证：还不能直接点名是 panic、watchdog、掉电、温控还是其他底层硬件问题
+- 当前最像：宿主内核 panic 或硬件 watchdog 触发的非指令式硬重启
+
+这也意味着，`ddcf...` 第 9 轮异常和后续恢复，不能只从容器/agent 层看，还必须把“宿主本身在那段时间处于异常重启风暴”作为同等级背景条件带上。
+
+再补一条对 `ddcf...` 自身很关键的排除式结论：
+
+- 在 `2026-05-12 19:20~22:40` 这个窗口里，当前没有找到该实例的 `RestoreInstance` / `Start container` / `StopContainer` / `ContainerStart` 成功或失败记录
+- 也没有找到能说明它在这几个小时内被 agent 显式拉起过一次的实例级生命周期动作日志
+
+这条结论来自对以下日志范围的按实例筛选：
+
+- `/data/iaas_agent_logs/go_iaas_agent.log`
+- `go_iaas_agent-*.log.gz` 归档
+
+筛选关键词包括：
+
+- `ddcf5039`
+- 完整实例名 `RK8052B1202500035_ddcf5039-e559-46b8-b470-ff7aa72d9cef`
+- `RestoreInstance`
+- `Start container`
+- `StopContainer`
+- `ContainerStart`
+- `InspectContainer`
+- `health-check`
+- `failed`
+
+结果是：
+
+- 这个时间窗内没有打到 `ddcf...` 的 restore/start/stop 级别动作
+- 能看到的更多是更晚时间里的周期性资源查询 / inspect 类噪音
+
+这会把 `ddcf...` 的时序模型再收紧一步：
+
+- 第 9 轮在 `19:27` 抓到的 `running + /data/app MISSING`，更像是宿主 reboot 风暴中的一个异常快照
+- 之后到 `22:31` 宿主再次 reboot 之前，当前没有证据表明 agent 中途成功对这个实例做过一次显式 restore/start
+- 因而当前更像是：`ddcf...` 在异常窗口之后一直没有被真正恢复，直到 `22:31` 那轮宿主 reboot 完成后，才由 `iaas_agent` 的 `RestoreInstance` 统一拉回
+
+- 容器内：`ps -o pid,stime,etime,cmd -p 1` -> `PID 1  STIME 08:30:19  ELAPSED 1-03:24:11  init`
+- 宿主通过 `docker inspect --format '{{.State.Pid}}'` 取到容器 host pid 为 `1434`
+- 宿主 `ps -p 1434 -o pid,ppid,lstart,cmd` -> `Mon May 11 08:30:19 2026`
+
+4. 这一组时间关系比之前更关键：
+
+- 容器 host-side init 进程启动时间：`08:30:19`
+- ext4 镜像 `Last mount time`：`08:30:20`
+- Docker `StartedAt`：`08:30:20.242`
+
+也就是说，在当前能拿到的秒级时间粒度上：
+
+- `74ae` 的容器 init 进程已经在 `08:30:19` 存活
+- 该实例镜像的 ext4 超级块记录的最近一次 mount 是 `08:30:20`
+- Docker 把容器记为 started 也是 `08:30:20.242`
+
+5. 这条证据不能证明“容器内 bind mount 建立晚于 init”，因为 OCI/runc 本来就是先准备容器 mounts，再 exec PID 1；但它确实开始支持另一件更关键的事：
+
+宿主对 `/data/DockerMount/<实例>.img -> /data/android_data/<实例>` 这一层最终 loop/ext4 挂载完成的时间，并不早于该旧对象容器 init 的启动时间，至少已经出现了“init 在 `08:30:19`，镜像最近 mount 记录在 `08:30:20`”这一秒级倒挂。
+
+6. 因为 `ps lstart` 与 ext4 `Last mount time` 都只有秒级精度，所以这里还不能把结论写成绝对严格的“精确先后铁证”；但和之前相比，判断已经从：
+
+- “只是机制上怀疑存在 auto-start vs remount 竞争”
+
+推进到：
+
+- “在 `74ae` 同实例时间戳上，已经看到容器 init (`08:30:19`) 早于或至少不晚于镜像最终 mount 记录 (`08:30:20`) 的直接信号”
+
+7. 这会让当前主模型再收紧一步：
+
+- `74ae` 旧对象在宿主 reboot 后很早被拉起
+- 容器 init 已经在跑时，宿主这边对应 `.img` 的最终 ext4/loop mount 记录才落在下一秒
+- 这与前面 live mountinfo 看到的结果完全同向：容器 `/data` 固定在底层 `nvme0n1p6` 对象，而宿主后来看到的是 `loop17`
+
+因此到这一步，关于“是不是容器先活了、宿主后把镜像挂上去”这件事，已经不只是抽象机制推演，而是有了 `74ae` 同实例时间戳层面的正向支持。
+
+----
+
+再补三条 runtime 级证据，把这条链路进一步压实：
+
+1. 直接从宿主读取 `74ae` 的容器 init 进程 `/proc/1434/mountinfo`，看到的 `/data` 仍然是底层 nvme 视图，而不是 `loop17`：
+
+- `1495 1377 259:6 /android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd /data rw,relatime shared:849 - ext4 /dev/nvme0n1p6`
+
+这点很关键，因为它不是“docker exec 里看到的容器视角”，而是宿主直接读正在运行的 container init 进程 `/proc/<pid>/mountinfo` 得到的结果。说明 `1434` 这个 live init 进程从内核角度持有的 `/data`，确实就是 `nvme0n1p6` 子目录对象。
+
+2. Docker 对象与 `containerd-shim-runc-v2` 已经精确对上：
+
+- `docker inspect -f '{{.Id}} {{.State.Pid}} {{.Name}}'` ->
+	`0b0551ced869ab192b17720448042904b13e65a033f826ecbcf26a4554aefa5a 1434 /RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- 宿主 `ps -p 1351 -o pid,ppid,lstart,cmd` ->
+	`1351     1 Mon May 11 08:30:19 2026 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0b0551ced869ab192b17720448042904b13e65a033f826ecbcf26a4554aefa5a ...`
+
+也就是说：
+
+- `1351` 这个 `containerd-shim-runc-v2` 就是 `74ae` 对应 runtime 对象
+- 它的启动时间同样是 `08:30:19`
+- 它拉起的 host pid `1434` 也是 `08:30:19`
+
+因此现在时间链已经能收成：
+
+- `containerd-shim-runc-v2(74ae)`：`08:30:19`
+- host-side container init(pid 1434)：`08:30:19`
+- ext4 `Last mount time`：`08:30:20`
+- Docker `StartedAt`：`08:30:20.242`
+
+这比单看 `docker StartedAt` 更强，因为它把 runtime 层和真正运行的 container init 进程都钉在了 `08:30:19`。
+
+3. 试图从当前宿主内核日志里直接捞 `74ae/loop17` 的 boot 当时 mount 记录，结果没有保留下来。
+
+- `journalctl -k --since '2026-05-11 08:30:00' --until '2026-05-11 08:31:30' | grep -Ei 'loop17|ext4|DockerMount|android_data|mounted filesystem'` 无直接命中
+- `dmesg -T | grep -Ei 'loop17|EXT4-fs|74ae|android_data'` 当前只看到 5 月 12 日白天其他实例的 audit/SELinux 访问痕迹，没有 5 月 11 日 08:30 那次 `74ae` 的保留记录
+
+这意味着：
+
+- 我们当前已经拿到“runtime 对象启动时刻”和“ext4 最近 mount 记录时刻”的同实例证据
+- 但内核 ring buffer 没有再给出一条可直接引用的 `loop17 mounted` boot 历史正文
+
+所以现在证据结构变成：
+
+- 有正向时序支持：`shim/init @ 08:30:19` 先于或不晚于 `ext4 Last mount @ 08:30:20`
+- 有 live 挂载对象支持：运行中的 init 进程 `/data` 仍是 `nvme0n1p6`
+- 没有保留下来的，是 boot 当时那条内核 mount 日志正文
+
+综合下来，当前对 `74ae` 的模型已经进一步从“可能是竞争”收敛成：
+
+- `dockerd/containerd-shim` 在 `08:30:19` 已经把旧对象 runtime 拉起来
+- live init 进程从启动起就拿着底层 `nvme0n1p6` 的 `/data`
+- 宿主这边对应镜像的 ext4 最近 mount 记录落在 `08:30:20`
+- 宿主后续看到的 `loop17` 视图，没有传播改写掉这个 live init 进程已经持有的 `/data` mount object
+
+
+docker inspect -f '{{.Id}} {{.State.Pid}} {{.State.StartedAt}} {{.Name}}' RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd
+ps -p 1434 -o pid,ppid,lstart,cmd
+ps -p 1351 -o pid,ppid,lstart,cmd
+
+这三条命令合起来，就是“`74ae` 对应的 runtime 在 `08:30:19` 已经被拉起”的最短证据链：
+
+1. 第一条 `docker inspect` 负责把容器对象、host pid、Docker 记账启动时间绑在一起：
+
+- 对象 ID：`0b0551ced869ab192b17720448042904b13e65a033f826ecbcf26a4554aefa5a`
+- host pid：`1434`
+- Docker `StartedAt`：`2026-05-11T00:30:20.24237647Z`
+
+2. 第二条 `ps -p 1434` 证明这个 live 容器的 host-side init 进程本身已经在 `08:30:19` 启动：
+
+- `1434  1351  Mon May 11 08:30:19 2026  /system/bin/init ...`
+
+也就是说：
+
+- `1434` 就是 `74ae` 当前正在运行的容器 init
+- 它的父进程是 `1351`
+- 它的启动时间是 `08:30:19`
+
+3. 第三条 `ps -p 1351` 再把这个父进程精确钉成 `74ae` 对应的 `containerd-shim-runc-v2`：
+
+- `1351  1  Mon May 11 08:30:19 2026  /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0b0551ced869ab192b17720448042904b13e65a033f826ecbcf26a4554aefa5a ...`
+
+这里最关键的是：
+
+- 启动时间也是 `08:30:19`
+- 命令行里的 `-id 0b0551...` 与第一条 `docker inspect` 拿到的 Docker 对象 ID 完全一致
+
+因此可以把这条结论写得很严格：
+
+- `docker inspect` 证明 `74ae` 当前运行态对应 host pid `1434`
+- `ps -p 1434` 证明这个 live init 进程在 `08:30:19` 已经存在
+- `ps -p 1351` 证明它的父进程就是 `74ae` 对应的 `containerd-shim-runc-v2`，而这个 shim 也在 `08:30:19` 已经存在
+
+所以“`dockerd/containerd-shim` 在 `08:30:19` 已经把 74ae 这个旧对象拉起来了”这句话，现场可直接引用的最短命令链，就是上面这三条。
+
+如果要更严谨一点，建议口径写成：
+
+通过 `docker inspect` 获取 `74ae` 的 Docker 对象 ID 与 host pid，再用 `ps` 反查 host pid 及其父进程，可见：
+
+- host-side init(pid 1434) 启动于 `2026-05-11 08:30:19`
+- 其父进程 `containerd-shim-runc-v2`(pid 1351) 也启动于 `2026-05-11 08:30:19`
+- 且 shim 命令行中的 `-id` 与该容器 Docker 对象 ID 完全一致
+
+因此可确认：`74ae` 对应的 runtime 对象在 `08:30:19` 已经被拉起；这比 Docker 元数据里的 `StartedAt=08:30:20.242` 还早约 1 秒。
+
+----
+
+继续直接在板卡宿主日志里追 `74ae` 的创建过程后，已经拿到一组比之前更硬的创建时段原始记录。
+
+首先，真正命中的不是当前 `host_agent.log`，而是宿主上的归档日志：
+
+- `/data/iaas_agent_logs/go_iaas_agent-2026-05-07T11-18-32.872.log.gz`
+
+这个文件覆盖了 2026-05-07 北京时间 19:45 附近，也正好对应 `74ae` 的创建窗口。
+
+1. `74ae` 的创建请求正文在 iaas_agent 归档里直接能看到。
+
+关键命中时间：`2026-05-07 17:45:04.732`（日志是 UTC，折算北京时间约 `19:45:04`）。
+
+命中内容显示：
+
+- 收到 MQTT 下发的 `container_info`
+- 其中包含 `RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- IP 为 `10.111.4.169`
+- storage 为 `23622320128`
+- 以及 dpi / dns / gateway / resolution_ratio / system_property 等创建参数
+
+2. `iaas_agent` 日志已经直接打出了 `74ae` 的完整存储准备命令链，这一段是“可直接引用的原始命令正文”。
+
+关键命中从 `2026-05-07 17:45:50.989` 开始：
+
+- `[27431433 -Create Container] 开始创建容器 RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- `ExecCommand start, cmd:/usr/bin/sh -c mkdir -p /data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- `ExecCommand start, cmd:/usr/bin/sh -c dd if=/dev/urandom of=/data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img bs=1 count=0 seek=23622320128`
+- `ExecCommand start, cmd:/usr/bin/sh -c losetup /dev/loop1 /data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img`
+- `ExecCommand start, cmd:/usr/bin/sh -c tune2fs -u 1000 -g 1000 /data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img`
+- `ExecCommand start, cmd:/usr/bin/sh -c mount -o loop /data/DockerMount/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd.img /data/android_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- `ExecCommand start, cmd:/usr/bin/sh -c mkdir -p /data/container_persistent_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+- `ExecCommand start, cmd:/usr/bin/sh -c mkdir -p /data/container_paas_data/RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd`
+
+并且这些命令后面都带有对应的 `ExecCommand end ... code:0`，说明执行成功。
+
+3. `docker create` 这一步在板卡日志里也能看到“创建容器成功”，但没有打印成 shell 命令正文。
+
+同一时段继续命中：
+
+- `IaasAgentGo/pkg/dockersdk.(*DockerManager).CreateContainer`
+- `msg:"[27431433 -Create Container] 创建容器: RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd"`
+- 随后：`容器 RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd 创建成功, ID=fc08f87124d56aee0ce2ca5ac17d0fb1c7d7eb703a8fb1944d795f8ac84a83ea`
+- 再随后：`IaasAgentGo/pkg/dockersdk.(*DockerManager).StartContainer`
+- `msg:"[27431433 -Create Container] 启动容器: RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd"`
+- 以及：`容器 RK8052B1202500035_74ae20fe-498f-4093-b358-377ef6713edd 启动成功`
+
+这里很关键的一点是：
+
+- 在这个归档里，`mount -o loop ...` 是以 `ExecCommand start, cmd:/usr/bin/sh -c ...` 的形式原样打印出来的
+- 但 `CreateContainer` / `StartContainer` 只打印了 Go 函数级事件，没有出现类似 `cmd:/usr/bin/sh -c docker create ...` 的原始 shell 命令
+
+这说明对 `74ae` 这次 2026-05-07 的新建过程：
+
+- 存储准备 / loop mount 确实是通过 shell 命令执行的，日志里已经有完整正文
+- 但容器创建本身更像是 `iaas_agent` 通过 `DockerManager.CreateContainer` 走 Docker SDK/API 创建，而不是通过 shell 直接执行 `docker create ...`
+
+4. 因此，关于“能不能从板卡日志里拿到 `74ae` 创建的完整命令”，当前结论需要分两部分写：
+
+- 能直接拿到的完整命令：是 `mkdir` / `dd` / `losetup` / `tune2fs` / `mount -o loop` / `mkdir -p persistent/paas` 这一整条存储准备命令链
+- 不能直接拿到 shell 正文的部分：是 `docker create` 本体；日志目前只证明它由 `IaasAgentGo/pkg/dockersdk.(*DockerManager).CreateContainer` 成功创建，并返回了容器 ID，但没有把完整 CLI 字符串打出来
+
+5. 这一批板卡原始日志也顺手把一个重要判断边界收紧了：
+
+- 至少在 2026-05-07 这次新建 `74ae` 时，创建路径的实际执行者是 `AC_IaaS_agent` 这一侧的 `containerService.createHandler / DockerManager.CreateContainer`
+- 而不是我们之前静态分析里另一条 `Virtual_Host_Agent.CreateContainer` 路径
+
+换句话说，板卡上的动态事实显示：
+
+- `74ae` 的新建创建链是 `AC_IaaS_agent` 主导
+- 并且它确实先执行了 `mount -o loop /data/DockerMount/...img /data/android_data/...`
+- 然后再调用 `DockerManager.CreateContainer` 创建容器，再 `StartContainer` 启动
+
+所以现在关于 `74ae` 的创建链，已经能在板卡日志层面直接落成：
+
+- 创建请求进入 `IaaSAgentGo/internal/app/container/service/containerService.createHandler`
+- 通过 `pkg/utils.execCommand` 逐条执行 storage/mount 命令
+- 再调用 `pkg/dockersdk.(*DockerManager).CreateContainer`
+- 最后调用 `pkg/dockersdk.(*DockerManager).StartContainer`
+
+其中，当前能逐字引用的“完整命令正文”，就是上面那组 `ExecCommand start, cmd:/usr/bin/sh -c ...` 行；而 `docker create` 本体目前只能定位到 SDK 调用事件，尚未在日志里看到完整 CLI 文本。

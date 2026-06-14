@@ -1,0 +1,118 @@
+
+请把这次任务视为“按既定方案落地实现”，不是重新评审可行性。
+
+继续推进 arm96 hardening 主线，请实现 V0.59.0-vmp：把 vmp 以 opt-in 方式接进 libarm96 的 hardening pipeline。
+
+先确认上下文并按现有代码基线实施，不要重做方案设计。当前前提如下：
+
+1. 仓库与基线
+- arm96 主仓库在：/home/mc/2T/cx10/android10/vendor/hello/arm96
+- vmp 仓库在：/home/mc/2T/cx10/vmp
+- arm96 当前主线已具备 V0.67 Full Layout Repack / RX island 能力，相关文档已写入：
+  /home/mc/2T/cx10/.claude/context/tango_hardening.md
+- 这次要实现的是文档中的：
+  V0.59.0-vmp（vmp 接入 hardening pipeline 规划）
+
+2. 目标
+- 将 vmp 接入 libarm96 的 patch/encrypt 流水线
+- 仅做 opt-in 原型，默认关闭，不影响当前 release 默认行为
+- 推荐路径是复用 V0.67 RX island，调用 vmpacker 的 rx-cave 模式
+- 不允许新增 PT_LOAD，不允许把 RW LOAD 改成 RWX
+- 不修改 loader 的 AES-GCM 容器格式、memfd/fexecve 模型或 binfmt POC 规则
+
+3. 已知工具能力
+- vmp 已支持：
+  -inject-mode rx-cave
+  -payload-off
+  -payload-va
+  -payload-max
+- arm96 侧已有新版 host 工具：
+  android10/vendor/hello/arm96/res/bin/vmpacker
+- 当前规划中记录的工具 SHA256 为：
+  76565dca6f3f4654db2791abc0c642f290e93d3b3629da728882cd013c93ddf5
+
+4. 本次实现范围
+请优先完成以下内容：
+
+- 在 hardening/src/version.txt 中增加并接入：
+  VMP_CORE_ENABLE=0
+  VMP_CORE_MODE=rx-cave
+  VMP_CORE_BIN=res/bin/vmpacker
+  VMP_CORE_TARGETS=
+  VMP_CORE_STRICT_VERIFY=1
+  VMP_CORE_MIN_FREE=0x1000
+  VMP_CORE_TOOL_SHA256=76565dca6f3f4654db2791abc0c642f290e93d3b3629da728882cd013c93ddf5
+
+- 在 hardening/src/main.py 中实现独立 VMP stage，建议形式：
+  _apply_vmp_core(...)
+  _parse_vmp_targets(...)
+  _select_vmp_cave(...)
+- VMP stage 放在：
+  relayout -> stub -> vmp -> scatter decoy -> A96D -> whitelist verify -> encrypt
+- 从 V0.67 RX island 中给 VMP 分配子区间，避开 stub 和 decoy
+- 调用 vmpacker rx-cave 模式，把 payload 写入 island
+- 将 VMP 的 payload range、trampoline/目标改写范围纳入结构化 whitelist / critical range 管理
+- 保持 VMP 关闭时输出行为与当前主线一致
+
+- 视实现便利度，补齐 island_va：
+  优先方案：扩展 relayout_v067.py 的 RelayoutResult，直接返回 island_va
+  备选方案：在 main.py 里基于现有映射逻辑临时计算
+
+5. 需要新增的门禁
+请实现并接入 E59xx gate，至少包括：
+
+- E5901: vmpacker 缺失、不可执行、SHA256 不匹配或 CLI 能力不符
+- E5902: VMP 开启但 RX island 不存在 / 无法计算 island_va
+- E5903: payload 越界，或与 stub / decoy / reserved range 重叠
+- E5904: VMP 后 e_phnum / PT_LOAD / RX LOAD / RWX 状态漂移
+- E5905: VMP diff 未被 payload/trampoline 白名单完整覆盖
+- E5906: vmp 翻译失败（unsupported instruction、range 不完整、外跳等）
+
+6. 目标选择与性能约束
+- 首版 target 不要从原始 libarm96 翻译器核心里随便选函数。
+- 优先目标是 V0.66 Shadow Core Guard / stub 侧启动期安全判定块：
+  hardening/src/stub.s 注入到 libarm96 后，shadow expire / fail-rate / witness
+  相关的短小 guard decision range。
+- 实现时请先通过 stub.meta / objdump 定位 stub 注入 VA 与 file offset，
+  再挑选该 guard decision 小块做 vmpacker dry-run。
+- 不要 VM 化整个 stub entry trampoline。
+- 不要覆盖保存/恢复寄存器序言、branch-back 尾段或复杂 syscall/时间读取片段。
+- 如果当前 vmp 不支持该 range 的指令形态，则本版只完成 pipeline 接线和 E59xx gate，
+  不要转向 JIT/DBT 主循环、syscall fast path、signal/memory helper、code cache lookup
+  等热路径。
+- V0.59.0-vmp 首版只允许 1 个显式 target range，禁止自动扫描/批量 VM 化。
+- 未完成 VMP off/on A/B 冷启动对比前，不得把 VMP_CORE_ENABLE 默认打开。
+
+7. 验收要求
+实现完成后请至少完成这些验证：
+
+- VMP_CORE_ENABLE=0 时：
+  构建与行为不退化
+- VMP_CORE_ENABLE=1 时：
+  make.sh 可成功跑通
+  E4903 / E650x / E67xx / E59xx 全通过
+- 静态结构验证：
+  PT_LOAD 数量不变
+  RX LOAD 数量不变
+  RW 非 RWX
+  payload 完全位于 RX island
+- 设备/行为口径不退化：
+  arm96 -v 仍 1 行
+  arm96 -i 仍 2 行
+  arm96 / -h / -a 仍静默
+- 性能验收：
+  必须保留 VMP off baseline 与 VMP on 实验组对比
+  至少覆盖 app_process32 启动、zygote_secondary 稳定性、一个典型 32 位 app 冷启动
+  不得出现 ANR、zygote restart loop 或明显冷启动劣化
+  若目标命中热路径或性能不可接受，必须回退 target 选择或仅保留 pipeline/gate
+- 如能跑到 mustpass，继续验证；如受环境限制无法全跑，请明确说明卡点
+
+8. 工作方式要求
+- 先读现有实现和文档，再动手
+- 遵循当前代码风格，做最小改动
+- 不要顺手重构无关逻辑
+- 不要改动我已有的无关脏文件
+- 先实现默认关闭的安全接线和 gate，再考虑扩展 target 选择体验
+- 做完后给我一个清晰总结：改了哪些文件、VMP stage 如何接入、默认关闭时是否完全不变、还剩什么风险/后续项
+
+请直接开始实现，不要只停留在规划。

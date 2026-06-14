@@ -1,0 +1,20 @@
+请阅读 /hom/mhc/56T/cx10/.claude/chats/chat3-arm96.txt
+请阅读 /hom/mhc/56T/cx10/.claude/chats/chat8.txt
+请阅读 /hom/mhc/56T/cx10/.claude/chats/chat8.txt
+
+这是第3轮对抗，对方的分析文档
+  .claude/chats/Adversarial_analysis/arm96-analysis-round3-V0.52.0.md
+
+
+中间有发现明文：
+sub_402028 中 /proc/device-tree/comptible 检查使用 "cix;myt,p1" 字符串（明文！），且设备验证失败时调用 sub_424AE0(0) = exit(0)。D6 仍未升级。
+重大突破！ sub_403B30 是 HMAC-like FNV 哈希比较 的反 hook 检测！D3 被大幅加强 — 不再用明文字符串，改用 5 个哈希常量。立即逆向这些哈希
+。。。
+
+
+请结合自身的设计安全策略，确认对方的攻击路径是否成立
+
+如果需要可以借助反编译环境：
+可以借助ida-mcp-server来反编译，服务地址：http://192.168.11.26:8745/mcp
+默认打开文件与当前课题无关，你需要指定打开的文件，接口是支持的
+

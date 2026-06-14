@@ -1,0 +1,37 @@
+测试宿主：adb connect 192.168.2.19:5555 #debian系统
+测试容器：adb connect 192.168.2.19:5004 #定制aosp10
+
+当前代码状态在这个环境上运行时，测试容器可以正常运行adb 也能正常连接，但是用QtScrpy无法推出流出画面来，帮看下什么原因
+有必须的话，可以修改源码
+
+windows环境参考命令：scrcpy.exe -s 192.168.2.19:5004 --pause-on-exit=if-error
+
+初步定位:
+根因分析结果
+经过全面排查，发现两个关键问题导致 scrcpy/QtScrcpy 无法工作：
+
+1. OMX Service 启动失败（核心问题）
+
+mediacodecservice starting  # 每秒重试，无法启动
+avc: denied { add } for interface=android.hardware.media.omx::IOmx
+OMX HAL service (android.hardware.media.omx@1.0-service) 无法在容器内正常注册到 hwservicemanager，导致视频编码器不可用。
+
+SELinux 原因: vendor_hwservice_contexts 文件为空，OMX hwservice 缺少正确的安全标签。
+
+2. FLAG_SECURE 设置
+
+type BUILT_IN, address {port=0}, state ON, FLAG_SECURE, FLAG_SUPPORTS_PROTECTED_BUFFERS
+显示配置了 FLAG_SECURE，这会阻止屏幕录制。scrcpy 需要 media projection 权限或通过 adb 获取无障碍截图能力。
+
+建议解决方案
+方案 A：修复 SELinux 策略（推荐）
+
+在容器构建时，向 vendor_hwservice_contexts 添加 OMX 服务标签：
+
+
+android.hardware.media.omx::IOmx        u:object_r:hal_omx_hwservice:s0
+android.hardware.media.omx::IOmxStore u:object_r:hal_omx_hwservice:s0
+方案 B：临时禁用 OMX 编码器依赖
+
+
+请根据这个分析结果，优先尝试方案 A 修复 SELinux 策略，这样可以确保系统安全性和功能完整性。如果需要临时解决问题，可以考虑方案 B，但请注意这可能会影响系统的其他功能。

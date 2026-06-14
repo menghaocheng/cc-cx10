@@ -1,0 +1,58 @@
+继续推进 arm96 加固主线，实现 V0.67.0 Full Layout Repack / RX Gap Expansion。
+
+当前仓库：/home/mc/2T/cx10
+目标模块：android10/vendor/hello/arm96
+规划文档：.claude/context/tango_hardening.md 中已新增 V0.67.0 规划小节。
+
+目标：
+在不新增 PT_LOAD、不把 RW 段改成 RWX 的前提下，通过文件布局重排释放 libarm96 原始 ELF 中 R-X 段后的 VA 空洞，为后续更大的 stub / multi-island 策略提供约 64.5KB 的 executable island。
+
+已知 ELF 布局：
+- PHDR table: offset 0x40，8 * 56 = 0x1c0，end 0x200
+- .note.gnu.build-id 从 0x200 开始，所以 PHDR 后无空余空间，不适合直接新增第 9 个 program header
+- R-X LOAD: offset=0x000000, vaddr=0x000000, filesz=memsz=0x104984
+- RW LOAD: offset=0x104b88, vaddr=0x114b88, filesz=0x00b220, memsz=0x10ebd0
+- 当前文件 gap: 0x104b88 - 0x104984 = 0x204
+- 当前 VA gap: 0x114b88 - 0x104984 = 0x10204
+
+推荐实现方向：
+1. 在 hardening/src/main.py 中新增 V0.67 relayout 逻辑，发生在 V0.66 stub 注入前或与 stub island 分配统一处理，A96D padding append 前。
+2. 将 RW LOAD 及其后续文件内容整体后移 0x10000：
+   old_rw_off=0x104b88 -> new_rw_off=0x114b88
+   保持 RW vaddr=0x114b88 不变。
+3. 更新所有 p_offset >= old_rw_off 的 program headers：
+   RW LOAD、DYNAMIC、TLS、GNU_RELRO 等 +0x10000。
+4. 更新 section header table：
+   e_shoff += 0x10000；
+   sh_offset >= old_rw_off 的 section +0x10000；
+   注意 NOBITS section 的处理要审慎。
+5. 扩展首个 R-X LOAD：
+   p_filesz/p_memsz: 0x104984 -> 0x114b88。
+6. 让 0x104984 ~ 0x114b88 成为 file-backed executable island。
+7. 首版可以先把现有 V0.66 stub 从旧 cave 迁移到新 island，旧 cave 保留为 decoy 或回滚路径。
+8. 新增 E67xx gate：
+   - relayout preflight 失败
+   - LOAD 对齐不满足
+   - PHDR/SHDR 修正不一致
+   - DYNAMIC/TLS/GNU_RELRO 不再落入 RW LOAD
+   - island 不在 executable PT_LOAD 内
+   - entry branch / branch-back verify 失败
+9. 保持 V0.49 E4901 输入指纹 gate 不变；重排发生在 patch pipeline 内。
+10. E4903 post-patch whitelist 需要结构化适配 bulk move，不能简单关闭。
+
+明确不要做：
+- 不新增第 9 个 PT_LOAD
+- 不复用 PT_NOTE
+- 不把 RW LOAD 改成 RWX
+- 不改变 libarm96 密文容器格式
+- 不改变 loader memfd/fexecve 模型
+- 不改 binfmt POC 规则
+- 不把 CAS setThreadPoolConfiguration:-25 或 challenge-response 混进本版本
+
+建议先做：
+- 读 .claude/context/tango_hardening.md 的 V0.67.0 小节
+- 读 android10/vendor/hello/arm96/hardening/src/main.py 的 _parse_elf64、_inject_core_stub、patch_binary
+- 读 encrypt_core.py 的 A96D orig_size 逻辑
+- 先实现一个独立 relayout helper 和静态 verifier
+- 构建后用 readelf -lW/-SW 对比 original、preencrypt
+- 再跑 ./make.sh --build cx、verify_shadow_guard_host.sh、verify_mustpass_host.sh

@@ -1,0 +1,2 @@
+准备继续在arm96上工作了，本会话开始实施V0.57
+这分析记录可以参考：/home/mhc/56T/cx10/.claude/context/arm96_pretranslator_migration_handoff.md

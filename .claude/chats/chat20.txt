@@ -1,0 +1,86 @@
+
+优化一下，现在这些关键事件是明文的字符串，插入FW的代码要加一个混淆机制：取其md5的前8位，等效于：
+root@localhost:/# echo -n "on_pre_start_proccess" | md5sum | cut -c1-8
+461272e9
+
+arm96j 和arm96d中的代码可以兼容两种情况：原始+混淆的
+
+因为FW的修改将会提取成patch，而核心功能在arm96j和arm96d，前者的修改只是为了后者，后者是将会闭源，前者尽可能减少暴露的细节，至少意图不要那么直白
+
+
+
+/home/mhc/56T/rk10/Rockchip_RK3588_Android10.0_SDK/frameworks/base/services/gif/java/com/android/server/gif/GifGuardService.java
+
+请更新镜像和插件，镜像的编译方法和更新方法如果不清楚，可以向我确认
+
+
+
+把编译脚本的结构优化一下：把编译libarm96 arm96server libarm96从make.sh分离出来形成一个独立的编译脚本，然后在make.sh中调用。另外再增加一个编译arm96_sidecar_gen的脚本，也在make.sh中调用
+
+
+1.可以先去掉 arm96/libarm96/arm96server -> prebuilts/ 的同步。
+—— 同意
+2.arm96_sidecar_gen 暂时保留同步到 prebuilts/，除非我们一起把它也迁到 vendor/arm96/arm96/ 这条 active prebuilt 路径。
+—— arm96_sidecar_gen也从prebuilts中去掉，把它迁移到vendor/arm96/arm96/这条 active prebuilt 路径。
+3.最干净的最终模型是：build/out/<target>/bin/ 作为唯一构建输出目录，sync_active_prebuilts.sh 负责把四个产物同步到 arm96，然后 Soong 全部从那里取。这样 tango_reimpl/prebuilts/ 只保留原始输入，比如 tango_pretranslator.arm64，不再保存派生产物。
+—— 同意
+
+另外make_arm96j_and_arm96d.sh 的输出也迁移到这个路径来，先make，然后把目标拷贝到OUT_BIN，然后./sync_active_prebuilts.sh再把它们同步到到vendor/arm96那边。
+在拷贝到OUT_BIN时把目标文件中的src去掉
+
+最终生产线/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl是会被删除的，所以编译镜像只能依赖vendor/arm96
+
+在继续之前，还有什么不清楚的，可以向我问题
+
+
+把版本号改成V0.57, 
+编译一下完整的镜像在并更新到测试设备跑一下基本功能，开始前请跟我确认你的编译镜像及更新镜像步骤
+
+
+关于编译和更新镜像debug，请根据你这次成功的经历，看下是否有需要补充的，方便后继更加高效地验证问题
+
+
+把.claude/instructions/build_and_debug.md和
+/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl
+的代码分别提交一下，注意忽略这些文件
+    vendor/arm96/arm96/arm96
+    vendor/arm96/arm96/arm96_sidecar_gen
+    vendor/arm96/arm96/arm96d
+    vendor/arm96/arm96/arm96j.jar
+    vendor/arm96/arm96/arm96server
+    vendor/arm96/arm96/libarm96
+
+
+刚意识到一个问题：arm96.pt.enabled中能控制安装的时候会不会生成.arm96文件，并不能控制已经生成的.arm96是否生效
+是否生效应该是在libarm96中决定的。
+请确认一下，前面的A/B测试中在关闭arm96.pt.enabled的时候是否有重新安装应用或把已经生成的.arm96文件删除？
+
+调整一下：
+1./home/mhc/56T/cx10/android10仓库中的这几笔提交
+0e462c4b3eb arm96: wire active prebuilts into image
+e3212741ce8 arm96: wire install pretranslate extras and sidecar-gen integration
+b137d878868 增加arm96插件
+合并成一个
+
+2.这几笔提交合并成一个
+7dfd4504964 Declare OMX HAL service interfaces
+d896e9fe2ca enable arm96 image build switch
+af6451edd77 add arm96 integration
+
+3.这两笔不用提交
+eec20882d53 BUILD_ID=VC.20260507.008.2-dbg
+f45f8794b4e BUILD_ID=VC.20260506.008.1-dbg
+
+4.以上两笔提交，加上这笔提交:
+1178a794b99 remove legacy tango integration
+共3笔，重新提取成patch, 更新到/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/res/release/patchs
+原来的我已经备份成patchs-bk
+
+5.更新/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/shell/release.sh
+安装时预编译相关的交付物做成一个配置，包括：
+ a).以上第1点形成的patch
+ b).arm96j
+ c).arm96d
+ d)其它 —— 还有吗？帮我确认一下
+
+ 开始前有什么不清楚的可以向我提问

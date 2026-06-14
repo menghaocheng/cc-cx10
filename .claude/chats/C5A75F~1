@@ -1,0 +1,13 @@
+请阅读 /hom/mhc/56T/cx10/.claude/chats/chat3-arm96.txt
+
+这是第二轮对抗，对方的分手文档
+  .claude/chats/Adversarial_analysis/arm96-analysis-round2-V0.51.0.md
+
+对方指出，与0.44版本相比，0.51版本去掉了PCG，安全性倒退了，并且解释出“Cheersu Technology Co”这咱敏感的字符串
+
+请结合自身的设计安全策略，确认对方的攻击路径是否成立
+
+如果需要可以借助反编译环境：
+可以借助ida-mcp-server来反编译，服务地址：http://192.168.11.26:8745/mcp
+默认打开文件与当前课题无关，你需要指定打开的文件，接口是支持的
+

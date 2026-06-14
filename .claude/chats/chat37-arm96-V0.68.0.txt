@@ -1,0 +1,41 @@
+继续推进 arm96 加固主线，实现 V0.68.0 Scatter Decoy Attack Points（基于 V0.67 RX island）。
+
+当前仓库：/home/mc/2T/cx10
+目标模块：android10/vendor/hello/arm96
+
+已知前置状态：
+
+V0.67.0 Full Layout Repack 已落地（RW 后移 + RX 扩展 + E67xx + TC-017）。
+当前文档已新增 V0.68.0 规划小节：.claude/context/tango_hardening.md。
+本会话目标：
+
+在 V0.67 释放的 RX island 内分散注入非混淆诱饵点（明文可见，但与真实鉴权链解耦）。
+诱饵内容首版包含：
+授权截止时间字符串（如 to 20260701-19:00:00）
+epoch 整数（LE32/LE64）
+伪配置键值（如 EXPIRE_EPOCH=...）
+新增 E68xx gate：
+点位越界/窗口外写入
+与 stub/关键结构重叠
+注入数量不达标
+白名单登记不一致
+扩展 E4903 为结构化白名单（offset + bulk ranges + decoy ranges），禁止宽松全放行。
+在 verify_mustpass_host.sh 新增：
+TC-020：decoy 点位窗口/重叠校验
+TC-021：最小命中数校验
+回归要求：
+make.sh --build cx 通过
+verify_shadow_guard_host.sh 通过
+SKIP_DEVICE_SUITE=1 ./verify_mustpass_host.sh 通过
+需要时再跑设备主链验证
+明确不要做：
+
+不新增 PT_LOAD
+不改 RWX
+不改密文容器格式、loader memfd/fexecve、binfmt POC
+不在本版本混入 CAS setThreadPoolConfiguration:-25 或 challenge-response
+建议实现顺序：
+
+先在 hardening/src/main.py 实现 decoy helper + E68xx gate + E4903 结构化适配
+再补 verify_mustpass_host.sh 的 TC-020/TC-021
+最后给出 readelf/静态扫描对比与门禁日志摘要 

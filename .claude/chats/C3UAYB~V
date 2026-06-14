@@ -1,0 +1,40 @@
+
+  继续当前项目，实施 V0.53（硬件绑定敏感信息去明文 + 抗补丁收口）。           
+                                                                              
+  请先读取：                                                                  
+  1) .claude/context/tango_hardening.md（重点看 V0.53 章节）                  
+  2) android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/sr
+  c/loader.c                                                                  
+  3)                                                                          
+  android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/shell/make.sh  
+  4) android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/sr
+  c/version.txt                                                               
+  5) android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/sr
+  c/profiles/cx.txt                                                           
+  6) android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/sr
+  c/gen/version.h                                                             
+                  
+  实施范围（仅做定向保护，不做整包加壳/全量加密改造）：                       
+  - P0-1：在 make.sh 的现有字符串加密链路中新增并输出以下密文宏：
+    STR_BUILD_PROP_PATH, STR_BUILD_RELEASE_KEY, STR_DT_COMPAT_PATH,           
+  STR_DT_GROUPS                                                               
+  - P0-2：改造 loader.c 的 platform_check_android_release() 与                
+  platform_check_dt_compatible()，改为运行时解密字符串并在使用后 secure_zero。
+  - P0-3：补齐并固定 HKDF 索引映射（loader 与 make.sh 对齐）。
+  - P0-4：平台绑定检查增加至少一个关键路径复验点，降低单点 NOP 绕过成功率。   
+  - P0-5：确保 gen/version.h 与最终 arm96 不再出现以下明文：                  
+    cix;myt,p1                                                                
+    /proc/device-tree/compatible                                              
+    /system/build.prop                                                        
+    ro.build.version.release=                                                 
+                                                                              
+  约束：                                                                      
+  - 不引入与 V0.53 无关的重构。                                               
+  - 保持现有 V0.51/V0.52 机制兼容，不回退 mustpass 语义。                     
+  - 优先复用现有 _xor_decode / _derive_seed / secure_zero 机制与风格。        
+                                                                              
+  完成后请输出：                                                              
+  1) 修改文件清单                                                             
+  2) 关键变更点（文件:行号）                                                  
+  3) 验证结果（至少包含 strings 命中检查）                                    
+4) 未执行项与原因（如无法做真机验证要明确说明）

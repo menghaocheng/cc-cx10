@@ -1,0 +1,13 @@
+推荐新会话开场白（可直接复制）：
+  继续 arm96 加固实施：执行 V0.48（仅实现，不做 V0.49/V0.50）。                                                                                        
+  先读：                                                                                                                                               
+  1) .claude/README.md                                                                                                                                 
+  2) .claude/instructions/project_entry.md                                                                                                             
+  3) .claude/context/tango_hardening.md（V0.48 小节，含 Preflight + Acceptance）                                                                       
+  4) .claude/context/arm96_session_taskboard.md                                                                                                        
+                                                                                                                                                       
+  要求：                                                                                                                                               
+  - 仅做 V0.48 三项：关键数据域完整性覆盖扩展、release 禁用明文 core fallback、1-byte 篡改门禁回归                                                     
+  - 全程中文                                                                                                                                           
+  - 每完成一步同步更新 arm96_session_taskboard.md                                                                                                      
+  - 改完后给出文件级变更清单和验收结果（通过/失败及原因）

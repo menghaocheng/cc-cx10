@@ -1,0 +1,38 @@
+以下是别的AI对当前arm96方案的简要评价:
+.claude/chats/Adversarial_analysis/ARM96_Security_Analysis_Report-for-0.62.0.md
+
+它说的不一定对，可能有些它认为不安全的点其实已经有暗中深层次的保护，如延迟下毒策略，但这些点需要你帮确认它到底说的攻击点是否成立
+然后看下有哪些是比较明显需要加强的
+
+.claude/chats/Adversarial_analysis/ARM96_Security_Analysis_Report-for-0.62.0+.md
+
+
+调整一下sync_active_prebuilts.sh
+~/2T/cx10/android10/vendor/arm96中涉及到地.rc和.te，在执行sync_active_prebuilts.sh的时候统一从/home/mc/2T/cx10/android10/vendor/hello/arm96
+拷贝一次
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ 
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ find ../../arm96/ -name *.rc
+../../arm96/arm96/arm96.rc
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ find ../../arm96/ -name *.te
+../../arm96/sepolicy/arm96.te
+../../arm96/sepolicy/arm96_sidecar_gen.te
+../../arm96/sepolicy/arm96d.te
+
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ find ./ -name *.rc
+./build/cache/arm96/system/etc/init/arm96.rc
+./src/arm96j/init.arm96j.rc
+./src/arm96d/init.arm96d.rc
+./init/tangolic.rc
+./init/arm96-debug.rc
+./init/arm96server.rc
+./init/arm96.rc
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ 
+mc@ubuntu22:~/2T/cx10/android10/vendor/hello/arm96$ find ./ -name *.te
+./sepolicy/tangolic.te
+./sepolicy/arm96.te
+./sepolicy/arm96j.te
+./sepolicy/tango_pretranslator.te
+./sepolicy/arm96d.te
+
+
+

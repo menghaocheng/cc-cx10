@@ -1,0 +1,39 @@
+ 我们开始实施 V0.51（可选增强）：keyed-tag + 错误结果模式。
+  注意：本轮先不做 V0.50 challenge-response，只做 V0.51 范围。                                                                                                    
+                                                                                                                                                                  
+  目标：                                                                                                                                                          
+  1) 将易被静态 patch 的明文/固定比较，升级为 keyed-tag 校验；                                                                                                    
+  2) 将单点 abort 改为受控“错误结果模式/延迟失效链”；                                                                                                             
+  3) 不破坏 V0.49 现有门禁与发布行为。                                                                                                                            
+                                                                                                                                                                  
+  请先阅读并基于现状给出“最小改动实施方案 + 精确改动清单（文件与函数级别）”，再动代码。                                                                           
+                                                                                                                                                                  
+  重点文件：                                                                                                                                                      
+  - hardening/src/loader.c（重点：anti-debug 与 arm96server 真实性路径）
+  - hardening/src/arm96server.c（重点：scan_and_track / debugger 检测路径）                                                                                       
+  - hardening/src/encrypt_core.py（keyed-tag 构建期材料生成）                                                                                                     
+  - shell/make.sh（配置透传与生成流程接线）                                                                                                                       
+  - hardening/src/version.txt（V0.51 开关与参数）                                                                                                                 
+  - .claude/context/tango_hardening.md（版本文档同步）                                                                                                            
+                                                                                                                                                                  
+  约束：                                                                                                                                                          
+  - 保持 V0.49 门禁不回退（E4901/E4902/E4903/E4905）。                                                                                                            
+  - 不引入与现有 anti-debug / guardian / tracked PID 冲突的行为。                                                                                                 
+  - 默认关闭或灰度可控（通过 version.txt 开关）。                                                                                                                 
+  - 不做超范围重构。                                                                                                                                              
+                                                                                                                                                                  
+  验收标准（本轮必须覆盖）：                                                                                                                                      
+  - 密文随机化/改写不能稳定关闭检测；                                                                                                                             
+  - 仅 patch 单点 abort 不能恢复稳定运行；                                                                                                                        
+  - 错误结果模式行为可复现且边界可控；                                                                                                                            
+  - 性能回归在可接受范围；                                                                                                                                        
+  - mustpass 回归保持全绿。                                                                                                                                       
+                                                                                                                                                                  
+  请先输出：                                                                                                                                                      
+  A. 逐文件改动计划（到函数级）                                                                                                                                   
+  B. 风险点与回归用例矩阵                                                                                                                                         
+  C. 执行顺序（先后步骤）                                                                                                                                         
+  确认后再开始实现。            
+
+
+  

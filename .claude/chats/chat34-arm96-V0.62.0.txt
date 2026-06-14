@@ -1,0 +1,48 @@
+继续推进 arm96 加固，实现 V0.65.0：libarm96 Stub 注入机制。
+
+请先阅读并遵循：
+- CLAUDE.md
+- .claude/context/tango_hardening.md 中的 “V0.65.0（libarm96 Stub 注入机制）” 小节
+
+本轮目标不是实现概率性故障策略，也不是 challenge-response；只做注入机制本身：
+
+1. 确认当前现状：
+   - android10/vendor/hello/arm96/hardening/src/stub.s 当前会被 compile_stub.sh 编译成 hardening/res/stub.bin
+   - 目前没有任何消费者把 stub.bin 注入或执行
+   - libarm96 由 hardening/src/main.py patch 原始 translator 后，再交给 encrypt_core.py 加密
+
+2. 实现 V0.65.0 的最小闭环：
+   - version.txt / make_common.sh 增加 CORE_STUB_* 配置，推进版本到 V0.65.0
+   - compile_stub.sh 继续生成 stub.bin，并新增 stub.meta
+   - stub.s 改为最小 AArch64 position-independent 注入 stub，保留 branch-back placeholder
+   - hardening/src/main.py 增加 ELF64 注入工具层：
+     - 解析 ELF header / program header
+     - VA <-> file offset 映射
+     - AArch64 B 指令 encode/decode
+     - PF_X code cave 校验
+     - entry branch patch
+     - branch-back placeholder patch
+     - E6501~E6505 gate
+     - post-injection verify
+   - patch_binary() 中按顺序接入：
+     复制 input → V0.49 preimage 校验 → fixed patch → wipe → V0.65 stub 注入 → append 30KB padding → whitelist diff
+
+3. 约束：
+   - stub.s 是给 libarm96 用，不给 loader 链接
+   - 不修改 loader 的 memfd/fexecve 执行模型
+   - V0.65.0 不做概率性奇怪故障、不做随机破坏、不做 challenge-response
+   - 第一版优先使用现有可执行 PT_LOAD 内的 code cave，不新增 ELF segment
+   - 所有注入改动必须纳入 V0.49 offset_changes 白名单
+   - CORE_STUB_INJECT_ENABLE=0 必须能完整回滚到 V0.64 行为
+
+4. 验证要求：
+   - 单独运行 compile_stub.sh，确认 stub.bin + stub.meta 生成且 SHA 一致
+   - 单独运行 main.py --input <translator> --output <tmp-libarm96>，确认 V0.49 + V0.65 gate 通过
+   - 用 objdump/llvm-objdump 检查 patched plaintext libarm96：
+     - entry branch 指向 stub
+     - stub branch-back 指向原始 continuation
+     - 指令合法
+   - 全量构建 android10/vendor/hello/arm96 下当前 profile
+   - 如可行，做设备 smoke：arm96 -v/-i/-h、binfmt flags=POC、zygote_secondary、32 位 app 启动
+
+请先不要直接大改。先探索 main.py、compile_stub.sh、stub.s、version.txt、make_common.sh 的当前实现，找出当前原始 translator 是否存在稳定 PF_X code cave；如果没有可靠 code cave，请停下来给出备选实现方案和风险评估。

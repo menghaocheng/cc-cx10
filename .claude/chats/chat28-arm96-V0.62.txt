@@ -1,0 +1,75 @@
+我们准备开始实施 arm96 V0.62.0。请先阅读并理解以下上下文，再开始动代码：
+
+1. 项目主线
+- 当前 arm96 主线在：/home/mc/2T/cx10/android10/vendor/hello/arm96
+- 关键文档：/home/mc/2T/cx10/.claude/context/tango_hardening.md
+- V0.62.0 规划已经写入该文档，标题为：
+  “V0.62.0（arm96server native 反 trace / 反 hook 增强）”
+- 相关评估笔记：
+  /home/mc/2T/cx10/.claude/context/arm96_blackobfuscator_v061_assessment.md
+
+2. 架构边界
+- /system/bin/arm96 是 loader，由 hardening/src/loader.c 生成。
+- loader 只是 libarm96 的启动封装：负责平台检查、反调试初检、启动/探测 arm96server、解密 libarm96 到 memfd，然后 fexecve。
+- loader 拉起 libarm96 后自身不再作为长期检测主体存在，因此 V0.62 不应在 loader 中加入周期线程。
+- libarm96 是预编译二进制，没有源码，不要向 libarm96 注入线程、hook 检测、信号处理或 inline patch，避免稳定性风险。
+- 长期反 trace 主体是 hardening/src/arm96server.c。
+
+3. 当前 arm96server 反 trace 模型
+- V0.38 起已经从 PTRACE_SEIZE app 改为 PID tracking + TracerPid 轮询，避免破坏 translator/app 信号处理。
+- arm96server 扫描 UID 10000-19999 的 32 位 app 进程，只跟踪 zygote_secondary 子进程或 orphan 到 init 的进程。
+- 新进程如果 TracerPid > 0，kill。
+- tracked PID 每轮重读 TracerPid，命中后 kill tracer + app。
+- scan_and_kill_debuggers() 扫 /proc/*/cmdline，识别 gdbserver/lldb-server/strace/frida* 并 kill。
+- arm96server main/guardian 都有 PR_SET_DUMPABLE=0、block signals、PTRACE_TRACEME 自保护。
+- guardian 负责 main 死亡后重启，并 kill tracked apps。
+- loader 启动窗口有 verify_arm96server_alive() hollow server 探测，空壳会进入延迟投毒/fault。
+
+4. V0.62.0 实施目标
+只把 blackobfuscator 中适合 arm96 架构的 native 侧策略迁移到 arm96server 或 loader 启动窗口，不迁移 Java/DEX/反射保护，不改 libarm96。
+
+V0.62.0 规划的 5 个点：
+- P0-1 Frida 默认端口探测：
+  在 arm96server 周期扫描中非阻塞探测 127.0.0.1:27042 和 127.0.0.1:27043，补充 cmdline 改名绕过场景。
+- P0-2 匿名 RWX mapping 检测：
+  由 arm96server 扫 tracked app 的 /proc/<pid>/maps，识别 rwxp 且无 pathname 的匿名映射。首版必须谨慎，先作为可疑信号/fault stamp 或配置化处置，必须考虑 DBT/JIT/memfd 合法映射白名单。
+- P0-3 arm96server 自身关键函数入口巡检：
+  检查 scan_and_track、scan_and_kill_debuggers、read_proc_status、spawn_guardian、v051_emit_fault_stamp 等函数入口是否被 direct branch/trampoline 覆写。只检查 arm96server 自身，不触碰 libarm96。
+- P1-1 随机化 scan cadence + fake check dispatch：
+  保持平均约 3s 扫描，但加小抖动，例如 2-4s；增加无害 fake check，混入真实检查路径，提高自动 patch 定位成本。
+- P1-2 tamper 处置形态收口：
+  强异常统一写 V0.51 fault stamp，复用延迟失效/tracked app 清理链，避免简单 exit/abort 成为稳定定位点。
+
+5. 关键约束
+- 不修改或注入 libarm96。
+- 不恢复 PTRACE_SEIZE app。
+- 不新增会影响 app 信号语义的 ptrace 行为。
+- 不直接把 RWX 检测作为强杀条件发布，必须先采样和白名单。
+- 优先保持现有 mustpass、zygote_secondary、32 位 app、guardian cascade 不退化。
+- 注意当前仓库可能有用户修改，动手前先检查 git diff，不要回滚无关改动。
+
+6. 建议实施顺序
+- 先读 hardening/src/arm96server.c 和 hardening/src/loader.c 中 fault stamp / verify_arm96server_alive 相关逻辑。
+- 先实现低侵入项：
+  1) Frida 端口探测
+  2) scan cadence 抖动
+  3) fake check dispatch
+- RWX mapping 检测先做采样/可观测或配置开关，不要默认强杀。
+- prologue 巡检要先确认静态链接 + clang/OLLVM 下函数入口形态，避免硬编码导致误报。
+- 每完成一个点都要考虑补 verify_mustpass 或最小 host/device 验收。
+
+7. 构建/验证参考
+- arm96 主线目录：
+  cd /home/mc/2T/cx10/android10/vendor/hello/arm96
+- 常规构建：
+  ./make.sh
+  或按 profile：
+  ./make.sh --build vc
+- 5 分钟评估版：
+  ./make_5min.sh
+- 设备侧更新三件套后需要重启 zygote_secondary。
+- 必过验收入口：
+  adb -s <SER> shell 'sh /data/local/tmp/verify_mustpass.sh'
+  或宿主侧 verify_mustpass_host.sh，按当前文档约定执行。
+
+请先基于 tango_hardening.md 的 V0.62.0 小节和 arm96server.c 做一次简短实施方案确认，然后再开始改代码。

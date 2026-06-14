@@ -1,0 +1,7 @@
+请理解gif cmd的工作原理。
+现在/data/local/tmp/plugin/bin/vpick list可正常输出
+gif cmd /data/local/tmp/plugin/bin/vpick list会卡住，帮分析一下是什么原因
+测试设备：adb connect 192.168.11.45:5004 #这是cix平台
+
+同样的机制在其它平台是正常的，如
+adb connect 192.168.11.117:5004 #这是RK3588

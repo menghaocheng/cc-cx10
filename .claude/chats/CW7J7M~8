@@ -1,0 +1,36 @@
+可以，给你一版可直接复制的新会话开场白：                                     
+                                                                             
+  继续 arm96 对抗加固课题，开始实施 V0.55。                                    
+                                                                               
+  请先阅读以下文档并对齐上下文：                                               
+  1) .claude/README.md                                                         
+  2) .claude/instructions/project_entry.md                                     
+  3) .claude/context/tango_hardening.md（重点：V0.54、V0.55章节）              
+                                                                               
+  实施目标：                                                                   
+  - 落地 V0.55：封堵“关键位点 patch + D4 重算回填”的离线重签绕过链。           
+  - 严格按文档中的 V0.55 P0-1 ~ P0-4 执行，优先最小改动闭环。                  
+                                                                               
+  实现范围约束：                                                               
+  - 不引入 V0.50 challenge-response 全链路                                     
+  - 不改外部接口与部署形态                                                     
+  - 不做与本次目标无关的重构                                                   
+                                                                               
+  预期改动文件（按需）：                                                       
+  - android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/src/
+  loader.c                                                                     
+  - android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/src/
+  encrypt_core.py                                                              
+  - android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/shell/make.sh
+  -                                                                            
+  android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/shell/release.sh
+  - verify_mustpass_host.sh（若当前仓内路径不同请自行定位）                    
+                                                                               
+  执行要求：                                                                   
+  1) 先给出实施计划（分步骤、逐文件）。                                        
+  2) 再实施代码修改。                                                          
+  3) 完成后给出：变更清单 + 关键diff解读 + 验证命令 + 验证结果。               
+  4) 验收必须覆盖：Round4最小补丁链复现后应进入解密认证失败；现有 mustpass     
+  主链不回退；性能抖动可控。                                                   
+                                                                               
+  全程使用中文沟通。    

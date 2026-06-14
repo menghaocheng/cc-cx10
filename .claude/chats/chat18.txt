@@ -1,0 +1,36 @@
+继续 arm96 V0.58 安装时预翻译，实现 Phase 1 最小 stub 链路。
+
+请先阅读：
+1. .claude/context/arm96_install_time_pretranslation_design.md
+2. .claude/context/arm96_install_time_pretranslation_contract.md
+3. .claude/context/arm96_install_time_pretranslation_landing_plan.md
+4. .claude/context/arm96_install_time_pretranslation_pms_pseudocode.md
+5. .claude/context/arm96_install_time_pretranslation_validation_plan.md
+
+当前已冻结架构：
+PMS install success
+  -> arm96 专用 system_server broker/AIDL
+  -> app_process Java bridge: arm96j
+  -> independent native daemon: arm96d
+  -> event log / native queue only
+
+实施约束：
+1. 只做 stub 链路，不接真实预翻译核心。
+2. 不调用 arm96_pretranslate_helper。
+3. 不生成 .arm96 sidecar。
+4. 不修改 runtime 查找逻辑。
+5. PMS/broker/插件必须使用 arm96 自有 AIDL/service/package/init rc。
+6. 不依赖 gif/GifGuard/vpick/vpkj 现有模块，只能参考其工作方式。
+7. arm96server 保持 hardening enforcement plane，不参与预翻译调度。
+8. 任一环节缺失、崩溃或未注册，都不能影响安装成功。
+
+第一阶段目标：
+1. 新增 arm96 broker AIDL 和 system_server service。
+2. 新增 arm96j app_process Java stub，能注册 broker 并收到事件。
+3. 新增 arm96d native daemon stub，能启动、注册服务、hello/onEvent 入队打日志。
+4. PMS 安装成功后在 property 开启时异步分发事件。
+5. property 默认关闭。
+6. 完成最小构建验证；如果能上设备，再验证 pm install 不阻塞、不回归。
+
+请先给出精确文件触点和实施顺序，然后开始改代码。
+

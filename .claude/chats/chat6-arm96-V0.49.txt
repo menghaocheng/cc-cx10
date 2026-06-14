@@ -1,0 +1,20 @@
+继续当前课题，进入 V0.49（风险门禁收口）实施阶段。                                                                          
+                                                                                                                              
+  请严格按文档执行并先读：                                                                                                    
+  1) .claude/context/tango_hardening.md（V0.49 新规划）                                                                       
+  2) .claude/context/libarm96_binary_mods_and_risk_control_2026-05-03.md（已证实风险与验收口径）                              
+  3) .claude/context/arm96_session_taskboard.md（阶段任务）                                                                   
+                                                                                                                              
+  本会话目标：只做 V0.49，不做 V0.50/V0.51。                                                                                  
+  范围：R-001~R-005 风险收敛，优先实现以下门禁能力：                                                                          
+  - 输入指纹门禁（build-id/长度窗口/关键段hash）                                                                              
+  - patch 前镜像断言（关键 offset 旧值签名）                                                                                  
+  - patch 后白名单核验（偏移/计数/范围）                                                                                      
+  - 容器头一致性校验（orig_size 边界与一致性）                                                                                
+  - 字符串擦除规则收口（allow/deny 可审计）                                                                                   
+  - 失败最小可观测性（受控错误码，避免纯静默失败）                                                                            
+                                                                                                                              
+  执行要求：                                                                                                                  
+  - 先给实施计划和文件触点，再开始改动；                                                                                      
+  - 每完成一项给阶段结论与证据；                                                                                              
+  - 允许修改代码/脚本与测试，但不做无关重构；                        

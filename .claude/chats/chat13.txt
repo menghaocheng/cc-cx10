@@ -1,0 +1,15 @@
+继续上次课题：先读 .claude/README.md、.claude/instructions/project_entry.md，然后
+很客观评价一下当前arm96基于二进制二次加固方案的安全性
+
+准备继续arm96的加固了，开始前请先：
+1.阅读.claude/README.md、.claude/instructions/project_entry.md
+2.阅读/home/mhc/56T/cx10/android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/hardening/中的核心代码，理解其实现原理和细节
+3.阅读另一AI对当前最新代码状态下的产物的逆向分析：/home/mhc/56T/cx10/.claude/chats/Adversarial_analysis/arm96-analysis-round5-V0.55.0.md
+
+
+接下来我们要做的是：
+1.客观评价一下当前方案的安全性
+2.评估一下当前方案是否存在结构性的缺陷
+3.探讨一下是否存在一种从原理上就是安全的方案，能否从根本上解决这两个问题：
+   a)时间炸弹被拆除过绕过
+   b)硬件绑定被绕过

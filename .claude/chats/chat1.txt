@@ -1,0 +1,3 @@
+继续上次课题：先读 .claude/README.md、.claude/instructions/project_entry.md，然后
+规划一个版本：增加一个cx定制，表示所有此芯平台都允许正常运行
+

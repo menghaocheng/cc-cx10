@@ -1,0 +1,92 @@
+续上次课题：先读 .claude/README.md、.claude/instructions/project_entry.md，然后
+很客观评价一下当前arm96基于二进制二次加固方案的安全性继
+
+
+
+结论先说：当前 arm96 这套“二进制二次加固”安全性我给到                       
+  中高（工程上明显强于常规壳+反调试），但不是“不可破”。                       
+  它的强项是把关键约束从“可 NOP                                               
+  的控制流”迁到了“密钥数据域”，短板是配置口径可被“宽松                        
+  profile”主动降级，以及对 root/内核级对手仍无硬件根信任。                    
+                                                                              
+  我基于你指定文档 + 代码/产物实证看的，关键证据如下：                        
+                                                                              
+  1. 数据域绑定做得很强                                                       
+                  
+  - reconstruct_key()把 ISAR0、MAC、EXPIRE、arm96server token 叠进            
+  key（loader.c:2016 起）。
+  - .text hash 也参与 token 还原（loader.c:2115 起），patch arm96server       
+  代码会导致解密失败，而不只是触发某个 if。                                   
+  => 这块是这套方案最硬的安全资产。
+                                                                              
+  2. 完整性校验真实存在且前置                                                 
+                                                                              
+  - 进 main 第一行就                                                          
+  integrity_check_text()（loader.c:2419-2425），不是“可选日志检查”。
+  - 运行时哈希对比失败静默退出（loader.c:388-400）。                          
+  => 对抗“直接改 loader 跳过检查”有实效提升。                                 
+                                                                              
+  3. 磁盘面暴露控制较好                                                       
+                                                                              
+  - libarm96 目前确实是密文头 TGENC022（实测 prebuilt 前 8 字节）。           
+  - decrypt_core_to_memfd 走 GCM 验证，失败不执行（loader.c:2266-2317）。
+  => 静态提取核心逻辑难度明显上升。                                           
+                                                                              
+  4. 运行期反调试是“守护+轮询”而非单点 ptrace                                 
+                                                                              
+  - arm96server 采用 PID tracking + TracerPid 轮询 + guardian                 
+  cascade（arm96server.c:613、543、438）。
+  => 比早期单纯 PTRACE_SEIZE 更稳，且能覆盖附加后清除。                       
+                                                                              
+  ---
+  我认为目前最关键的客观风险点（也是你现在真正的短板）：                      
+                                                                              
+  4. 运行期反调试是“守护+轮询”而非单点 ptrace
+
+  - arm96server 采用 PID tracking + TracerPid 轮询 + guardian cascade（arm96server.c:613、543、438）。
+  => 比早期单纯 PTRACE_SEIZE 更稳，且能覆盖附加后清除。
+
+  ---
+  我认为目前最关键的客观风险点（也是你现在真正的短板）：
+
+  - libarm96 目前确实是密文头 TGENC022（实测 prebuilt 前 8 字节）。
+  - decrypt_core_to_memfd 走 GCM 验证，失败不执行（loader.c:2266-2317）。
+  => 静态提取核心逻辑难度明显上升。
+
+  4. 运行期反调试是“守护+轮询”而非单点 ptrace
+
+  - arm96server 采用 PID tracking + TracerPid 轮询 + guardian
+  cascade（arm96server.c:613、543、438）。
+  => 比早期单纯 PTRACE_SEIZE 更稳，且能覆盖附加后清除。
+
+  ---
+  我认为目前最关键的客观风险点（也是你现在真正的短板）：
+
+  - 你当前生成配置显示为类似 cx 宽松口径：
+    - PLATFORM_CPU_CHECK=0、PLATFORM_REQUIRE_SM3SM4=0、PLATFORM_MAC_BINDING=0
+  （hardening/src/gen/version.h:20-24；gen/version.py:19-25）
+
+  - 这不是代码能力不够，而是构建策略主动放宽平台绑定，导致“跨设备复制阻力”显著
+  下降。
+  - 对应 profile
+  也能对上：profiles/cx.txt就是这么定义的（profiles/cx.txt:3-8）。
+
+  换句话说：
+  实现层很硬，但当前这次产物配置把一部分硬度自己关掉了。
+
+  ---
+  综合评级（按当前可见配置/产物）
+
+  - 对脚本小子/普通逆向：高（会被拦在早期）
+  - 对熟练本地 root 逆向：中高（需要系统性 patch + 重建链）
+  - 对内核级/硬件级对手：中（无 TEE/签名链锚点，最终仍可被强对抗）
+
+  ---
+  如果你要“更客观地拉满当前方案安全性”，优先级就两条：
+  1. 交付版别再用 cx 这类宽松 profile（恢复 CPU/ISA/MAC 绑定）；
+  2. 把“配置降级”本身纳入 must-pass 审计（构建后自动 fail：检测到
+  PLATFORM_CPU_CHECK=0 或 PLATFORM_MAC_BINDING=0 直接拒绝打包）。
+
+  我已经完成本轮评估；下一步如果你愿意，我可以直接给你一份“按 profile
+  的安全等级矩阵（cx/cs/vc/myt）+ 适用场景”，方便你以后出包时一眼判定风险。
+

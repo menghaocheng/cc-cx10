@@ -1,0 +1,86 @@
+
+准备继续在arm96上工作了，请深入理解arm96j arm96d的工作原理，
+深入理解arm96_sidecar_gen的由来
+
+libarm96也是基于二进制二次加固得来的，请参考它的做法给arm96_sidecar_gen进行加固，
+但不需要做那么厚，重点放在去tango指纹和加密这块。总体上要比libarm96轻
+
+
+避免这种信息的输出：
+
+r7:/ # arm96_sidecar_gen
+No input file specified
+Usage: pretranslator [options]
+Options:
+  --debug=<debug-options>: output debugging information in to the log
+  -d <debug-options>
+      Example: -d translate=info
+  --page-size=<page-size>: page size in bytes, default is 4096
+  --force: Ignore the signature check and always re-translate
+  -p <page-size>
+      Example: -p 16384
+  -j <num-threads>
+      Example: -j 8
+  --log-file=<log-file>  : log file to output statistics and debug information
+  -l <log-dir>            default is to ouput to standard error
+      Example: -l logs
+  --version              : print version
+  -V
+  --input-fd=<input-fd>  : input file descriptor
+      Example: --input-fd=10
+  --input-file-name=<input-file-name>   : input file name
+      Example: --input-file-name=/data/test/test
+  --output-fd=<output-fd>: ouput file descritopr
+      Example: --output-fd=20
+  --output-file-name=<output-file-name> : output file name
+      Example: --output-file-name=/data/test/test.arm96
+  --output-dir=<output-dir>             : output directory
+  --extra-symbols=<file>                : debug symbols to use for the current ELF
+  --apk                  : input file is an apk file
+Debug options:
+  <log-source>=<log-level>
+  Log sources:
+    translate : translation log source
+    elf       : elf parsing log source
+    cfg       : control flow graph log source
+    persist   : persistent image generation
+  Log levels:
+    off       : turn off logging
+    warn      : warning log level
+    info      : info log level
+    debug     : debug log level
+    trace     : trace log level
+    all       : all log level
+1|r7:/ #
+GCC: (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0
+.shstrtab
+.note.gnu.build-id
+.init
+.text
+.fini
+.rodata
+.eh_frame_hdr
+.eh_frame
+.tbss
+.init_array
+.fini_array
+.got
+.got.plt
+.data
+.bss
+.comment
+r7:/ # strings /vendor/bin/arm96_sidecar_gen|grep tango
+/dev/__properties__/u:object_r:tango_prop:s0
+tango.pretrans.debug
+tango.pretrans.log_dir
+tango.pretrans.max_size
+tango_pretranslator
+%s/tango-pretranslator-%d-%s.log
+/src/tango-pretranslator/build-target/decoder/thumb32.h
+/src/tango-pretranslator/build-target/decoder/arm.h
+/src/tango-pretranslator/build-target/decoder/aarch64.h
+/src/tango-pretranslator/build-target/decoder/fp_simd.h
+/src/tango-pretranslator/build-target/decoder/thumb16.h
+
+最好是先把tango相关字符串抹掉
+
