@@ -194,6 +194,19 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
 >   `platform_check()` 整体 VM 化后内部 `bl platform_check_cpu_part/isa_features`
 >   落到已是 trampoline 的入口，可以正常工作。
 
+> **Step 1.6（已完成，2026-06-16）**：新增测试 ELF（`tmp/demo_sigaction_shape.c`，
+> 未提交进 vmp 仓库）覆盖风险点2——`struct sigaction sa; sa.sa_handler = fn;` 这种
+> "ADRP+ADD 取函数地址 → 写入栈上结构体字段 → 经字段 BLR 间接调用" 形态：
+> - `check_with_handler(mode)`：栈上 `struct simple_sa{ handler; flags; }`，按 mode
+>   选择 `handler_a`/`handler_b` 两个函数地址存入字段，再经字段做 BLR 调用，
+>   handler 写全局变量留下可观察副作用。
+> - 反汇编含 `ADRP/ADD`(×2，取两个函数地址) + `STP/LDP`(栈帧) + `BLR`(间接调用) +
+>   `ADRP/LDR`(全局变量访问)，13/13 翻译无 WARN/ERROR。
+> - 保护后两种 mode 输出与基线**逐字节一致**（`HANDLER_A:1000`/`HANDLER_B:2001`，
+>   exit=209=2001&0xFF）。
+> - **结论**：风险点2（`sa.sa_handler = platform_sigill_exit` 这类"结构体字段存
+>   函数指针 + ADRP/ADD 取址 + BLR 间接调用"模式）已验证可行，**已解除**。
+
 1. ~~先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路~~ **已完成（见上）**。
 2. target 扩到 `platform_check()`（loader.c:2214，5 层编排）+ 参数派发逻辑
    （`-v/-i/-h/-a` 分支）。**注意**：`platform_check()` 本身是 `OBFUS_CFF`，内部
