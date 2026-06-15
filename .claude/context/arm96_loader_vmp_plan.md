@@ -139,11 +139,51 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
 
 ### V0.72 —— 验证/补强 native-call，纳入平台绑定主体
 
+> **Step 0（已完成，2026-06-16）**：在 V0.71.2 基础上将 `VMP_LOADER_ENABLE` 改为 `1`
+> （`VMP_CORE_ENABLE` 保持 `0`），`CUSTOM_VERSION=V0.72.0`，重新构建六件套并走
+> `docker rm -f con4` 重建容器 → docker cp 新六件套 → `docker restart con4` 冷启动验证：
+> - `sys.boot_completed=1` 全程保持，`zygote_secondary` 全程 `running`，dmesg 清空后
+>   无新增 `signal 11`（仅既有的 `vendor.cas-hal-1-1` 1 次，与 V0.71.2 一致）。
+> - `verify_mustpass` 复测 **11 PASS / 0 FAIL / 0 SKIP**（首次跑 TC-008 因
+>   arm96server 刚重启的时序问题 FAIL，复测通过，判定为偶发非回归）。
+> - **结论：V0.71 的 loader-VMP 脚手架（含 `platform_check_isa_features` 叶子函数
+>   VM 化）在冷启动下是安全的，`VMP_LOADER_ENABLE=1` 已转正为 V0.72.0 默认配置。**
+>   这意味着 V0.70/V0.71.0 的冷启动 crash-loop 根因确认为 `VMP_CORE_TARGETS=shadow_guard`
+>   （独立问题，见下方 VMP_CORE/shadow_guard 一节），与 loader-VMP 无关。
+> - 详见 `.claude/context/tango_hardening.md` 版本状态矩阵 0.72.0 行。
+
+> **第二个 target（已完成，2026-06-16，V0.72.1）**：在 V0.72.0 基础上把
+> `platform_check_cpu_part()`（loader.c:1430，MRS MIDR_EL1 + `PLATFORM_CPU_PARTS`
+> 字符串解析循环）由 `OBFUS_CFF` 改为 `noinline,used`（关闭 OLLVM，同 V0.71 做法），
+> 加入 `VMP_LOADER_TARGETS=platform_check_isa_features,platform_check_cpu_part`，
+> `CUSTOM_VERSION=V0.72.1`。同样走 `docker rm -f con4` 冷启动验证：
+> - seg0 grow 0x814fc→0x8c268，rx-cave payload=12819B（max=0x9d68，余量约 8KB）。
+> - `sys.boot_completed=1` 全程、`zygote_secondary` 全程 running、dmesg 全程
+>   **无任何 signal 11**（含 cas-hal-1-1 本次也未触发，比 0.72.0 更干净）。
+> - `verify_mustpass` 复测 **11 PASS / 0 FAIL / 0 SKIP**（首次同样 TC-008 偶发 FAIL）。
+> - **意义**：`platform_check_cpu_part` 含分支/循环/字符串解析（非纯直线代码），
+>   验证了 vmpacker 对这类目标在冷启动下也正确。详见 tango_hardening.md 0.72.1 行。
+>
+> 下一步：继续 native-call ABI 扩展（target 扩到 `platform_check()`）。
+
 1. 先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路
    （遵循"每项 vmpacker 能力先单测 ELF 再上六件套"的规矩）。如发现 ABI 缺口
    （x8 / 栈传参），在 vmpacker 补。
 2. target 扩到 `platform_check()`（loader.c:2214，5 层编排）+ 参数派发逻辑
-   （`-v/-i/-h/-a` 分支）。
+   （`-v/-i/-h/-a` 分支）。**注意**：`platform_check()` 本身是 `OBFUS_CFF`，内部
+   `bl` 到 `sigaction`/`platform_check_android_release`/`platform_check_dt_compatible`/
+   `fail_exit_gate` 等，部分子函数含 `fork`/`execl`（变参/影响地址空间），
+   需先评估哪些子调用满足"≤8 整型参、x0 返回、非变参"规则（§3.1 R2），
+   可能需要先做更小的中间 target（如先 VM 化 platform_check 的 L1/L2 分支
+   编排骨架，子函数调用保持原生 BL，不下沉整个 platform_check）。
+
+> **VMP_CORE/shadow_guard 冷启动回归（V0.70，独立问题）**：本次发现的另一个问题——
+> `VMP_CORE_TARGETS=shadow_guard` 在冷启动下让 32 位翻译进程 SIGSEGV——与本计划的
+> loader-VMP 无关，修复涉及 vmpacker 对 sp/寄存器上下文在冷启动场景下的正确性，
+> 工作量可能不小。建议作为**独立任务**排期（可以是 V0.72 的一部分，也可以推迟到
+> V0.73 之后），不要和上面的 loader-VMP Step 0 / native-call ABI 扩展混在一个改动里，
+> 避免变量耦合（这正是这次排查耗时的原因）。详见 `[[v069-vmp-regression]]` 记忆
+> 与 `tango_hardening.md` 第 5 节 0.70 行。
 
 ### V0.73 —— 导入/密钥编排（最后做，最敏感）
 
