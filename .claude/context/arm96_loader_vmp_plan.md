@@ -166,9 +166,35 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
 >
 > 下一步：继续 native-call ABI 扩展（target 扩到 `platform_check()`）。
 
-1. 先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路
-   （遵循"每项 vmpacker 能力先单测 ELF 再上六件套"的规矩）。如发现 ABI 缺口
-   （x8 / 栈传参），在 vmpacker 补。
+> **Step 1（已完成，2026-06-16）**：写了一个贴近 `platform_check()` 调用形态的
+> 测试 ELF（`check_orchestration(mode)`，源码暂存于 `tmp/demo_platform_check_shape.c`，
+> 未提交进 vmp 仓库）：
+> - 5 次 `bl` 到单参 helper（`helper_l1/l2/l3a/l3b/fail_gate`），覆盖 platform_check
+>   的"多次连续 bl + 结果做 &&/早退分支 + errno 单参 bl"形态。
+> - 4 条不同分支路径（mode=0~3），每条路径 `x0` 返回值不同。
+> - `vmpacker -func check_orchestration`（note 注入模式）翻译无 WARN/ERROR，
+>   保护后在 aarch64 宿主上跑 4 种 mode，输出与未保护基线**逐字节一致**
+>   （`GATE:L1` / `OK:1` / `GATE:errno=42` / `OK_WITH_ERRNO`，exit code 3）。
+> - **结论**：多 `bl`、条件早退分支、单参 native call、`x0` 返回值——
+>   `platform_check()` 实际会用到的这些形态 vmpacker 均正确，**无需先补
+>   栈传参/x8 ABI**（platform_check 内部调用均 ≤8 整型参且非 sret/变参，
+>   §3.1 R2 风险在该函数范围内不触发）。
+
+> **Step 1.5（已完成，2026-06-16）**：在同一测试 ELF 上追加**嵌套 VM 重入**验证——
+> `vmpacker -func check_orchestration,helper_l1`（一次性对调用者和被调用者两个函数
+> 同时做 VM 保护），即 `check_orchestration` 的字节码在解释执行中 `h_call_nat` 到
+> `helper_l1`，而 `helper_l1` 的入口此时也已被替换成 trampoline→`vm_entry_token`
+> （第二个 `func_id=1, token=0xA5000001`）。
+> - vmpacker 翻译/注入均无 WARN/ERROR（`Translated: 31/31` + `3/3`，token 表
+>   `entries: 2`）。
+> - 运行 4 种 mode，输出与未保护基线**逐字节一致**（`GATE:L1/OK:1/GATE:errno=42/
+>   OK_WITH_ERRNO`，exit=3）。
+> - **结论**：解释器对 `vm_entry_token` 的重入是安全的（VM 上下文按调用帧隔离，
+>   不会被内层调用覆盖外层状态）。**此前风险评估中"嵌套 VM 重入未验证"这一条已解除**——
+>   `platform_check()` 整体 VM 化后内部 `bl platform_check_cpu_part/isa_features`
+>   落到已是 trampoline 的入口，可以正常工作。
+
+1. ~~先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路~~ **已完成（见上）**。
 2. target 扩到 `platform_check()`（loader.c:2214，5 层编排）+ 参数派发逻辑
    （`-v/-i/-h/-a` 分支）。**注意**：`platform_check()` 本身是 `OBFUS_CFF`，内部
    `bl` 到 `sigaction`/`platform_check_android_release`/`platform_check_dt_compatible`/
