@@ -207,14 +207,44 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
 > - **结论**：风险点2（`sa.sa_handler = platform_sigill_exit` 这类"结构体字段存
 >   函数指针 + ADRP/ADD 取址 + BLR 间接调用"模式）已验证可行，**已解除**。
 
-1. ~~先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路~~ **已完成（见上）**。
-2. target 扩到 `platform_check()`（loader.c:2214，5 层编排）+ 参数派发逻辑
-   （`-v/-i/-h/-a` 分支）。**注意**：`platform_check()` 本身是 `OBFUS_CFF`，内部
-   `bl` 到 `sigaction`/`platform_check_android_release`/`platform_check_dt_compatible`/
-   `fail_exit_gate` 等，部分子函数含 `fork`/`execl`（变参/影响地址空间），
-   需先评估哪些子调用满足"≤8 整型参、x0 返回、非变参"规则（§3.1 R2），
-   可能需要先做更小的中间 target（如先 VM 化 platform_check 的 L1/L2 分支
-   编排骨架，子函数调用保持原生 BL，不下沉整个 platform_check）。
+> **Step 2 = V0.72.2（已完成并冷启动验收通过，2026-06-16）**：把 `platform_check`
+> 编排主体纳入 loader-VMP。过程中撞到一个**真实的 vmpacker 能力边界**并解决：
+>
+> - **首次尝试失败（直接把 `platform_check` 设为 target）**：vmpacker 报
+>   `translation aborted: 6 unsupported instruction(s) in platform_check`（`Translated: 42/48`），
+>   **拒绝产出**。6 条不支持指令全是 **NEON/SIMD**（`MOVI v0.16b,#0` / `STP q0,q0` /
+>   `STR q`），来源是 `struct sigaction sa`（约 150 B）的 `memset` 零初始化 + 字段写入
+>   被编译器**向量化**。VMP 的 VM 是纯 GPR（x0–x30+sp，无 V 寄存器），无法翻译。
+>   **注意这是进步**：对比 V0.69 的静默产崩溃码，vmpacker 现在遇不支持指令会 abort，
+>   不再"构建成功、运行期崩"。
+> - **`target("general-regs-only")` 此路不通**：与 fortified `memset`（`always_inline` +
+>   默认 NEON target）冲突，编译报 `inlining failed ... target specific option mismatch`。
+> - **采用的解法 = 拆函数**（loader.c）：新增 `platform_check_core(struct sigaction *old_sa)`
+>   承载**全部编排逻辑**（含在原位置 `sigaction(SIGILL, old_sa, NULL)` 恢复 handler，
+>   语义逐字节保持）；`platform_check()` 退回 `OBFUS_CFF`、只保留 NEON 结构体初始化 +
+>   安装 handler + `platform_check_core(&old_sa)` 一句委托。`old_sa` 经 x0 传入
+>   （native-call-in ABI）。VMP target 由 `platform_check` 改为 `platform_check_core`。
+>   core 无大结构体 → 纯 GPR → **完整翻译，0 不支持指令**。它内部 `bl` 到同样 VM 化的
+>   `cpu_part`/`isa_features`（嵌套 VM 重入，Step 1.5 已验证）。
+> - **构建**：`VMP_LOADER_TARGETS=platform_check_isa_features,platform_check_cpu_part,platform_check_core`，
+>   seg0 grow 0x8168c→0x8c268，rx-cave payload=13167B（max=0x9bd8，余量约 26KB），三 target 全 VM 化。
+> - **冷启动验收**（`docker rm -f con4`→mb4 重建基线[镜像内烤的是 V0.69.0，确实
+>   crash-loop 作对照]→docker cp V0.72.2 六件套→`docker restart con4`）：
+>   `sys.boot_completed=1`、zygote/zygote_secondary 40s 全程 running 无 flapping、
+>   dmesg **零 signal 11**（比 0.72.0 更干净）。`verify_mustpass` 复测 **11 PASS /
+>   0 FAIL / 0 SKIP**（首次 TC-008 偶发 FAIL，既有时序问题）。
+> - **结论**：`platform_check` 编排主体（含嵌套 VM 调用 cpu_part/isa_features）已纳入
+>   loader-VMP 并冷启动安全。**风险点3（fail_exit_gate inline + 函数复杂度）实测不触发**——
+>   真正的边界是 NEON，靠拆函数把 NEON 留在 native 侧规避，而非函数大小。
+
+剩余可选方向（非阻塞）：
+1. ~~先在 **vmp 仓库自带测试 ELF** 上验证多 bl、栈传参、x0 返回的完整链路~~ **已完成**。
+2. ~~target 扩到 `platform_check()` 编排主体~~ **已完成（V0.72.2，见上）**。
+3. 参数派发逻辑（`-v/-i/-h/-a` 分支）下沉为 VMP target——尚未做；同样需先排查是否含
+   NEON（字符串/buffer 处理易被向量化），策略同上（把 NEON 段留 native、只 VM 编排）。
+4. **教训固化**：选 loader-VMP target 前，先 `objdump -d` 看目标函数有无 `q`/`v` 向量
+   寄存器或 `MOVI`/`STP q`；有则要么换更小的纯编排子函数，要么拆分。`memset`/`memcpy`
+   大结构体、`-O` 自动向量化都是 NEON 来源。
 
 > **VMP_CORE/shadow_guard 冷启动回归（V0.70，独立问题）**：本次发现的另一个问题——
 > `VMP_CORE_TARGETS=shadow_guard` 在冷启动下让 32 位翻译进程 SIGSEGV——与本计划的
