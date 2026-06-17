@@ -246,13 +246,25 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
    寄存器或 `MOVI`/`STP q`；有则要么换更小的纯编排子函数，要么拆分。`memset`/`memcpy`
    大结构体、`-O` 自动向量化都是 NEON 来源。
 
-> **VMP_CORE/shadow_guard 冷启动回归（V0.70，独立问题）**：本次发现的另一个问题——
-> `VMP_CORE_TARGETS=shadow_guard` 在冷启动下让 32 位翻译进程 SIGSEGV——与本计划的
-> loader-VMP 无关，修复涉及 vmpacker 对 sp/寄存器上下文在冷启动场景下的正确性，
-> 工作量可能不小。建议作为**独立任务**排期（可以是 V0.72 的一部分，也可以推迟到
-> V0.73 之后），不要和上面的 loader-VMP Step 0 / native-call ABI 扩展混在一个改动里，
-> 避免变量耦合（这正是这次排查耗时的原因）。详见 `[[v069-vmp-regression]]` 记忆
-> 与 `tango_hardening.md` 第 5 节 0.70 行。
+> **VMP_CORE/shadow_guard 冷启动回归（V0.70，独立问题）—— 2026-06-17 根因坐实**：
+> `VMP_CORE_TARGETS=shadow_guard` 在冷启动下让 32 位翻译进程 SIGSEGV。本轮做了完整定位：
+> - 确定性复现（V0.72.2 基线只翻 `VMP_CORE_ENABLE=1`→ 冷启动 crash-loop；手动
+>   `app_process32` 即可受控复现）。开 `print-fatal-signals=1` 抓内核 reg dump：
+>   **x16=0xa5000000（VMP VM token）** → 崩在 VM 解释器内部；崩溃地址每次 ASLR 不同。
+> - **根因 = vmpacker 不支持 PIE**：`libarm96` 是 PIE/ET_DYN（memfd 随机基址），而
+>   `arm96`(loader) 是 ET_EXEC 固定 0x400000 —— 这才是 loader-VMP 全绿、VMP_CORE 必崩的
+>   根本区别。vmpacker 的 `tr_special.go`(ADR/ADRP)、`tr_branch.go:73`(BL)、
+>   `tr_stack.go:1815`(LDR-literal) 都把 **build-time `funcAddr+offset` 绝对 VA** 烤进字节码；
+>   对固定基址对、对 PIE 全错。shadow_guard common path 头条 `ldr =ENABLE` + svc/sp 就触发，
+>   loader-VMP 的 MRS/分支型 target 不碰 literal/svc/sp/adr 故不暴露。
+> - **曾试 Option B（把 shadow_guard 改成 bl 调用 / ret 结尾的独立函数走函数模式）实测失败**：
+>   崩溃逐字节相同（仅 +8），证明问题不在 range 入口/出口，在解释器执行字节码中途的 PIE 寻址。
+>   stub.s / version.txt 已全部还原回 V0.72.2。
+> - **真正修复 = 让 vmpacker PIE-safe**（ADR/ADRP/BL/LDR-literal 改运行时相对寻址，参照
+>   token 表已用的 self-relative 偏移手法 packer.go:911-949）。属较大的 vmpacker 改动，且
+>   vmpacker 是六件套硬耦合工具（要更新 `VMP_CORE_TOOL_SHA256`），单列任务。在此之前
+>   **VMP_CORE 维持关闭，V0.72.2(VMP_LOADER on / VMP_CORE off) 为健康发布基线**。
+>   详见 `[[v069-vmp-regression]]` 记忆。
 
 ### V0.73 —— 导入/密钥编排（最后做，最敏感）
 
