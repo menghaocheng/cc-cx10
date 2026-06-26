@@ -228,7 +228,25 @@ base_key ⊕ ISAR0 ⊕ MAC_HASH ⊕ EXPIRE_MASK ⊕ arm96server_token
 
 ---
 
+## Git 仓库结构（多仓库，提交前务必看清在哪个仓库）
+
+本工作区是**多个相互独立的 git 仓库套嵌**，没有 submodule 关系（无 `.gitmodules`），靠上层 `.gitignore` 划清边界。提交时极易搞错目标仓库：
+
+| 仓库 | 路径 | 分支 | remote | 管什么 |
+|---|---|---|---|---|
+| **cc-cx10**（顶层） | `/`（本工作区根） | `main` | `github.com:menghaocheng/cc-cx10` | 只管 `.claude/` 配置/文档/skill。**`.gitignore` 第 1 行 `/android10/` 把整个 AOSP 树排除** |
+| **arm96**（hardening 源码主仓） | `android10/vendor/hello/arm96/` | `main/1.0`（主线，另有 `main/2.0`、`debug/*`） | `aosp10` → env1 本地 AOSP 路径 | loader.c / arm96server.c / main.py / version.txt / res/bin 等加固源码与产物 |
+| **vmp**（VMPacker 工具） | `vmp/` | `main/1.0` | `github.com:menghaocheng/vmp` | ARM64 ELF VM 保护工具，产出 `res/bin/vmpacker` |
+
+要点：
+- **改 arm96 加固源码（loader.c/version.txt/六件套等）→ 提交到 arm96 仓库（`main/1.0`），不是顶层。** 顶层仓库对 `/android10/` 视而不见，在顶层 `git status` 里看不到这些改动。
+- 改 `.claude/context/*.md` 等文档 → 提交到顶层 cc-cx10（`main`）。
+- 下面「分支边界」里的 `main/1.0`/`main/2.0` 指的是 **arm96 仓库**的分支。
+- macOS 经 SMB 访问会撒下 `._*` AppleDouble 垃圾文件，提交前清理，勿混入。
+
 ## 分支边界（关键约束）
+
+> 注：本节 `main/1.0`/`main/2.0` 均为上表 **arm96 仓库**的分支（见「Git 仓库结构」）。
 
 - `android10/vendor/vclusters/opensource/thirdpart/tango_reimpl/src/` 是 C++ 源码主线区域
 - `main/1.0` 分支：只做 hardening、验收链、公共文档维护；**禁止修改** `src/tango_translator_reimpl/` 目录结构
