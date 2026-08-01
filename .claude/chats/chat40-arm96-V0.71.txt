@@ -1,0 +1,13 @@
+任务：为 arm96 加固工程实施 V0.71 —— loader VMP 脚手架 + 首个叶子函数。完整规划见 .claude/context/arm96_loader_vmp_plan.md，请先通读该文档（尤其第 2 节 build 插入点、第 3.1 节 native-call ABI 限制、第 7 节风险登记）。
+
+环境2（本机 192.168.2.x 网段）：编译机 ssh -o BatchMode=yes mc@192.168.2.18，仓库 /home/mc/2T/cx10（Windows 侧映射 Z:\mc\2T\cx10），测试设备 adb connect 192.168.2.19:5004。当前发布版本 V0.70.0（libarm96 shadow_guard 已 VMP 化）。
+
+V0.71 目标与验收门槛：
+1. 先量容量（R3）：确认 arm96 loader 第一个 PT_LOAD+PF_X 段是否有足够 cave 容纳 vmpacker 解释器+字节码；不足先解决注入空间再继续。
+2. 加 build 阶段：在 build_arm96_runtime_artifacts.sh 链接后、V0.28 sentinel patch 前（UPX 之前）插入 vmpacker 对 arm96 的 VMP 阶段；version.txt 新增 VMP_LOADER_ENABLE/MODE/TARGETS 配置块（复用 VMP_CORE_BIN/sha256 校验）。
+3. 首个 target：选叶子函数 platform_check_isa_features()（loader.c:1461）或 platform_check_cpu_part()（loader.c:1430）；该函数关掉 OLLVM（OBFUS 宏改 noinline）。
+4. 验收必过：arm96 -v 正常、libarm96 能正常解密（证明 Prong5 自指环一致，这是 V0.71 的核心目的）、verify_mustpass 与基线 8/11 持平、reboot（TC-004/007）正常、dmesg 无 SIGILL/segfault。
+
+关键约束：VMP 注入物必须落在第一个 PF_X 段内（否则 build/runtime 的 .text hash 口径不一致 → 解密失败）；被 VM 化函数对外调用必须满足"≤8 整型参数、返回值在 x0"。六件套硬耦合需同批构建整套替换。
+
+请全程用中文沟通。先通读规划文档并查 R3 容量，给出实施步骤后再动手。
