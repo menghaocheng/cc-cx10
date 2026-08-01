@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|---|
 | 触发网段 | `192.168.164.x` 或 `192.168.11.x` | `192.168.2.x` |
 | 编译机 | `ssh mhc@192.168.164.2` | `ssh mc@192.168.2.18` |
-| 仓库路径 | `/home/mhc/56T/cx10` | `/home/mc/2T/cx10` |
+| 仓库路径 | `/home/mhc/56T/cx10` | `/home/mc/4T/cx10` |
 | 测试宿主 | `adb connect 192.168.11.45:5555` | `adb connect 192.168.2.19:5555` |
 | 测试设备 | `adb connect 192.168.11.45:5004` | `adb connect 192.168.2.19:5004` |
 | 容器重建脚本 | `b4_build_cx10_con4.sh` | `mb4_build_cx10_con4.sh` |

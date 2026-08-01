@@ -30,19 +30,19 @@ adb connect 192.168.2.19:5004
 如果 arm96 相关产物有更新，先同步到镜像实际依赖的 active prebuilts，再编完整镜像：
 
 ```bash
-cd /home/mc/2T/cx10/android10/vendor/hello/arm96
+cd /home/mc/4T/cx10/android10/vendor/hello/arm96
 ./make.sh --build cx
 ./sync_active_prebuilts.sh
 
-cd /home/mc/2T/cx10/android10
+cd /home/mc/4T/cx10/android10
 ./make_image.sh --build mp
 ```
 
 编译完成后记录镜像 md5，方便确认宿主拿到的是新包：
 
 ```bash
-md5sum /home/mc/2T/cx10/android10/out/target/product/sky1_evb/images/sky1_evb-10-user-super.img.tgz
-find /home/mc/2T/cx10/android10/IMAGE -name 'sky1_evb-10-user-super.img.tgz' -printf '%T@ %p\n' | sort -nr | head -3
+md5sum /home/mc/4T/cx10/android10/out/target/product/sky1_evb/images/sky1_evb-10-user-super.img.tgz
+find /home/mc/4T/cx10/android10/IMAGE -name 'sky1_evb-10-user-super.img.tgz' -printf '%T@ %p\n' | sort -nr | head -3
 ```
 
 **更新测试设备镜像**
@@ -58,7 +58,7 @@ adb -s 192.168.2.19:5555 shell 'cd /data/local && docker rm -f con4; ./update_im
 
 ```bash
 adb -s 192.168.2.19:5555 push \
-  /home/mc/2T/cx10/android10/out/target/product/sky1_evb/images/sky1_evb-10-user-super.img.tgz \
+  /home/mc/4T/cx10/android10/out/target/product/sky1_evb/images/sky1_evb-10-user-super.img.tgz \
   /data/local/sky1_evb-10-user-super.img.tgz
 
 adb -s 192.168.2.19:5555 shell 'cd /data/local && md5sum sky1_evb-10-user-super.img.tgz 2>/dev/null || true'

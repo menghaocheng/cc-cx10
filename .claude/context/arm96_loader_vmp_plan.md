@@ -11,7 +11,7 @@
 - 当前发布版本 **V0.70.0**：libarm96 内部 shadow_guard 段已 VMP 化
   （`VMP_CORE_TARGETS=0x1049C0-0x104A90:shadow_guard`），verify_mustpass 8/11
   与基线持平。本规划是把 VMP **从 libarm96 扩展到 arm96(loader) 自身**。
-- vmp 独立仓库：`/home/mc/2T/cx10/vmp`（GitHub `menghaocheng/vmp`，分支 `main/1.0`）。
+- vmp 独立仓库：`/home/mc/4T/cx10/vmp`（GitHub `menghaocheng/vmp`，分支 `main/1.0`）。
 - arm96 加固仓库：`android10/vendor/hello/arm96`（分支 `main/1.0`）。
 
 ---
@@ -311,7 +311,7 @@ VM 化后字节码体积爆炸 + 依赖 computed-branch。
 ## 9. 实施约定提醒
 
 - 环境2（192.168.2.x）：编译机 `ssh -o BatchMode=yes mc@192.168.2.18`，仓库
-  `/home/mc/2T/cx10`，测试设备 `adb connect 192.168.2.19:5004`。
+  `/home/mc/4T/cx10`，测试设备 `adb connect 192.168.2.19:5004`。
 - 六件套硬耦合（arm96/arm96server/arm96d/libarm96），必须同批构建整套替换。
 - 构建：`cd android10/vendor/hello/arm96 && ./make.sh --build cx`；读
   `build/last_build.env` 取实际 OUT_BIN/VERSION。
